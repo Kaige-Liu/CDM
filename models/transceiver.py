@@ -1557,3 +1557,121 @@ if __name__ == "__main__":
 
 
 
+
+class Conv1dAggregator(nn.Module):
+    """
+    Lightweight 1D conv aggregator over token/length dimension L.
+
+    Input:
+        m: [B, 2C, L]   (matching features)
+    Output:
+        v: [B, H]       (aggregated vector)
+    """
+    def __init__(self, in_channels: int, hidden_channels: int = 64, num_layers: int = 3, kernel_size: int = 3):
+        super().__init__()
+        assert num_layers >= 1
+        padding = (kernel_size - 1) // 2
+
+        layers = []
+        c_in = in_channels
+        c_h = hidden_channels
+
+        for i in range(num_layers):
+            layers.append(nn.Conv1d(c_in, c_h, kernel_size=kernel_size, padding=padding))
+            layers.append(nn.ReLU(inplace=True))
+            # optional: you can add dropout or norm here, but keep it simple for now
+            c_in = c_h
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, m: torch.Tensor) -> torch.Tensor:
+        # m: [B, 2C, L]
+        h = self.net(m)                 # [B, H, L]
+        v = h.mean(dim=-1)              # global average pooling over L -> [B, H]
+        return v
+
+# alice的分类网络，第一步是算差异与乘积（捕捉哪里一样和哪里不一样），然后conv1d聚合，最后mlp分类
+class VerificationDiscriminator(nn.Module):
+    """
+    Discriminator for your semantic verification task.
+
+    Inputs:
+        g      : [B, C, L]  (Alice-side features)
+        g_hat  : [B, C, L]  (Bob feedback features; from \hat{f} or \hat{f_eve})
+    Output:
+        p      : [B, 1]     (probability of "legitimate / from Alice")
+
+    Design:
+        1) token-wise matching features:
+             m = concat( |g - g_hat| , g * g_hat )  -> [B, 2C, L]
+        2) lightweight Conv1d aggregator over L
+        3) small MLP -> sigmoid probability
+    """
+    def __init__(
+        self,
+        C: int,
+        L: int = 128,
+        agg_hidden: int = 64,
+        agg_layers: int = 3,
+        agg_kernel: int = 3,
+        mlp_hidden: int = 64,
+        output_logits: bool = False,
+    ):
+        super().__init__()
+        self.C = C
+        self.L = L
+        self.output_logits = output_logits
+
+        self.aggregator = Conv1dAggregator(
+            in_channels=2 * C,
+            hidden_channels=agg_hidden,
+            num_layers=agg_layers,
+            kernel_size=agg_kernel,
+        )
+
+        self.mlp = nn.Sequential(
+            nn.Linear(agg_hidden, mlp_hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(mlp_hidden, 1),
+        )
+
+    def forward(self, g: torch.Tensor, g_hat: torch.Tensor) -> torch.Tensor:
+        """
+        g, g_hat: [B, C, L]
+        return:
+            logits if output_logits=True else sigmoid probability
+        """
+        assert g.dim() == 3 and g_hat.dim() == 3, "g and g_hat must be [B,C,L]"
+        B, C, L = g.shape
+        assert g_hat.shape == (B, C, L), f"g_hat shape must match g. got {g_hat.shape}, expected {(B,C,L)}"
+        if self.C is not None:
+            assert C == self.C, f"Expected C={self.C}, got C={C}"
+        if self.L is not None:
+            assert L == self.L, f"Expected L={self.L}, got L={L}"
+
+        # 1) token-wise matching features
+        diff = torch.abs(g - g_hat)      # [B,C,L]
+        prod = g * g_hat                 # [B,C,L]
+        m = torch.cat([diff, prod], dim=1)  # [B,2C,L]
+
+        # 2) Conv1d aggregation over L
+        v = self.aggregator(m)           # [B, agg_hidden]
+
+        # 3) MLP head
+        logits = self.mlp(v)             # [B,1]
+        if self.output_logits:
+            return logits
+        return torch.sigmoid(logits)
+
+
+# -------------------------
+# quick sanity check
+# -------------------------
+if __name__ == "__main__":
+    B, C, L = 5, 8, 128
+    g = torch.randn(B, C, L)
+    g_hat = torch.randn(B, C, L)  # 就是fms输出的z1
+
+    D = VerificationDiscriminator(C=C, L=L, output_logits=False)
+    p = D(g, g_hat)
+    print("p:", p.shape, p.min().item(), p.max().item())  # [B,1], in (0,1)
