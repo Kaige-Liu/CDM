@@ -246,7 +246,7 @@ if __name__ == '__main__':
     # checkpoint = torch.load(r'/root/autodl-tmp/deepsc_mac/checkpoints/deepsc_mac/2025-12-14-17_42_26/checkpoint_74.pth')
     # checkpoint = torch.load(r'/root/autodl-tmp/deepsc_mac/checkpoints/deepsc_mac/2025-12-15-02_00_55/checkpoint_62.pth')
     checkpoint = torch.load(
-        r'/root/autodl-tmp/deepsc_mac/checkpoints/deepsc_mac/2025-12-13-19_33_31/checkpoint_109.pth')
+        r'C:\d\final\CDM\checkpoints\checkpoint_109.pth')
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']

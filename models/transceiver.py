@@ -1065,3 +1065,495 @@ class MAC_verify(nn.Module):
         out = out.squeeze(-1)  # [bs,1]
 
         return out
+
+
+
+
+
+
+
+
+
+# 12部分
+# 对SNR进行形状检查和调整的辅助函数
+import torch
+import torch.nn as nn
+
+
+def _snr_to_B1(snr: torch.Tensor) -> torch.Tensor:
+    """snr: [B] or [B,1] -> [B,1]"""
+    if snr.dim() == 1:
+        return snr.unsqueeze(-1)
+    if snr.dim() == 2 and snr.size(-1) == 1:
+        return snr
+    raise ValueError(f"snr must be [B] or [B,1], got {tuple(snr.shape)}")
+
+
+# -------------------------
+# ResNet Block (1D version)
+# -------------------------
+class ResNetBlock1D(nn.Module):
+    """
+    ResNet block on 1D length dimension.
+    Input/Output: x [B, C, L]
+    """
+    def __init__(self, C: int, kernel_size: int = 3):
+        super().__init__()
+        padding = (kernel_size - 1) // 2
+        self.conv1 = nn.Conv1d(C, C, kernel_size=kernel_size, padding=padding)
+        self.conv2 = nn.Conv1d(C, C, kernel_size=kernel_size, padding=padding)
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.act(self.conv1(x))
+        y = self.conv2(y)
+        return x + y
+
+
+# -------------------------
+# CBAM: CA + SA (1D version)
+# -------------------------
+class ChannelAttentionSNR(nn.Module):
+    """
+    Channel Attention (CA) with SNR condition.
+    x:   [B, C, L]
+    snr: [B] or [B,1]
+    out: [B, C, L]
+    """
+    def __init__(self, C: int, reduction: int = 8):
+        super().__init__()
+        hidden = max(C // reduction, 4)
+        self.mlp = nn.Sequential(
+            nn.Linear(C + 1, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, C)
+        )
+
+    def forward(self, x: torch.Tensor, snr: torch.Tensor) -> torch.Tensor:
+        B, C, L = x.shape
+        snr = _snr_to_B1(snr)  # [B,1]
+
+        # CBAM-CA uses avg & max pooling over spatial/length dim
+        x_avg = x.mean(dim=-1)       # [B,C]
+        x_max = x.amax(dim=-1)       # [B,C]
+
+        v_avg = torch.cat([x_avg, snr], dim=-1)  # [B,C+1]
+        v_max = torch.cat([x_max, snr], dim=-1)
+
+        w = torch.sigmoid(self.mlp(v_avg) + self.mlp(v_max))  # [B,C]
+        w = w.unsqueeze(-1)  # [B,C,1], broadcast on L
+        return x * w
+
+
+class SpatialAttention1D(nn.Module):
+    """
+    Spatial Attention (SA) adapted to 1D length L.
+    x:   [B, C, L]
+    out: [B, C, L]
+    """
+    def __init__(self, kernel_size: int = 7):
+        super().__init__()
+        padding = (kernel_size - 1) // 2
+        self.conv = nn.Conv1d(2, 1, kernel_size=kernel_size, padding=padding, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # CBAM-SA: avg & max over channels -> [B,1,L], then conv -> [B,1,L]
+        x_avg = x.mean(dim=1, keepdim=True)  # [B,1,L]
+        x_max = x.amax(dim=1, keepdim=True)  # [B,1,L]
+        m = torch.cat([x_avg, x_max], dim=1) # [B,2,L]
+        w = torch.sigmoid(self.conv(m))      # [B,1,L]
+        return x * w
+
+
+class CBAM_SNR_1D(nn.Module):
+    """
+    CBAM = CA(SNR) -> SA
+    """
+    def __init__(self, C: int, ca_reduction: int = 8, sa_kernel: int = 7):
+        super().__init__()
+        self.ca = ChannelAttentionSNR(C=C, reduction=ca_reduction)
+        self.sa = SpatialAttention1D(kernel_size=sa_kernel)
+
+    def forward(self, x: torch.Tensor, snr: torch.Tensor) -> torch.Tensor:
+        x = self.ca(x, snr)
+        x = self.sa(x)
+        return x
+
+
+# -------------------------
+# CCAM: FiLM (gamma/beta) with SNR
+# -------------------------
+class CCAM_SNR(nn.Module):
+    """
+    CCAM (FiLM style):
+      pooled(x) + snr -> gamma, beta (per channel)
+      out = gamma * x + beta
+
+    x:   [B, C, L]
+    snr: [B] or [B,1]
+    out: [B, C, L]
+    """
+    def __init__(self, C: int, hidden: int = 64):
+        super().__init__()
+        in_dim = C + 1
+        self.gamma = nn.Sequential(
+            nn.Linear(in_dim, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, C)
+        )
+        self.beta = nn.Sequential(
+            nn.Linear(in_dim, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, C)
+        )
+
+    def forward(self, x: torch.Tensor, snr: torch.Tensor) -> torch.Tensor:
+        B, C, L = x.shape
+        snr = _snr_to_B1(snr)
+
+        x_pool = x.mean(dim=-1)                # [B,C]
+        cond = torch.cat([x_pool, snr], dim=-1) # [B,C+1]
+
+        g = self.gamma(cond).unsqueeze(-1)     # [B,C,1]
+        b = self.beta(cond).unsqueeze(-1)      # [B,C,1]
+        return g * x + b
+
+
+# -------------------------
+# One Block in Fig.2
+# -------------------------
+class CAEMBlock(nn.Module):
+    """
+    Block in Fig.2:
+      Input -> (optional) ResNet Block -> CBAM -> CCAM -> Output
+
+    x:   [B,C,L]
+    snr: [B] or [B,1]
+    """
+    def __init__(
+        self,
+        C: int,
+        use_resnet: bool = False,
+        ca_reduction: int = 8,
+        sa_kernel: int = 7,
+        ccam_hidden: int = 64,
+    ):
+        super().__init__()
+        self.use_resnet = use_resnet
+        self.res = ResNetBlock1D(C=C) if use_resnet else nn.Identity()
+        self.cbam = CBAM_SNR_1D(C=C, ca_reduction=ca_reduction, sa_kernel=sa_kernel)
+        self.ccam = CCAM_SNR(C=C, hidden=ccam_hidden)
+
+    def forward(self, x: torch.Tensor, snr: torch.Tensor) -> torch.Tensor:
+        x = self.res(x)
+        x = self.cbam(x, snr)
+        x = self.ccam(x, snr)
+        return x
+
+
+class CAEM_Fig2_SNR_1D(nn.Module):
+    """
+    CAEM in Fig.2 (SNR-only, 1D adaptation):
+      x -> Block1 -> Block2 -> Conv(k=3) -> Z0
+
+    Input:
+      x   [B, C_in, L]   (your case: C_in=31, L=128)
+      snr [B] or [B,1]
+    Output:
+      z0  [B, C_out, L]
+    """
+    def __init__(
+        self,
+        C_in: int = 31,
+        C_out: int = 16,          # 对应论文 256->16 的“压通道”思想，你可改成 31 保持不变
+        use_resnet: bool = False, # 你说 resnet 可能不需要，就设 False
+        ca_reduction: int = 8,
+        sa_kernel: int = 7,
+        ccam_hidden: int = 64,
+    ):
+        super().__init__()
+        self.block1 = CAEMBlock(C=C_in, use_resnet=use_resnet,
+                                ca_reduction=ca_reduction, sa_kernel=sa_kernel, ccam_hidden=ccam_hidden)
+        self.block2 = CAEMBlock(C=C_in, use_resnet=use_resnet,
+                                ca_reduction=ca_reduction, sa_kernel=sa_kernel, ccam_hidden=ccam_hidden)
+
+        # Fig.2: Conv Layer 256x16x3 => here: Conv1d(C_in -> C_out, k=3)
+        self.final_conv = nn.Conv1d(C_in, C_out, kernel_size=3, padding=1)
+
+    def forward(self, x: torch.Tensor, snr: torch.Tensor) -> torch.Tensor:
+        x = self.block1(x, snr)
+        x = self.block2(x, snr)
+        z0 = self.final_conv(x)
+        return z0
+
+
+# quick sanity check
+if __name__ == "__main__":
+    B = 5
+    x = torch.randn(B, 31, 128)
+    snr = torch.tensor([-5.0, 0.0, 5.0, 10.0, 15.0])  # [B]
+    model = CAEM_Fig2_SNR_1D(C_in=31, C_out=16, use_resnet=True)  # 只需要这里的C_out控制一下输出的通道数即可
+    y = model(x, snr)
+    print(y.shape)  # [4, 16, 128]
+
+
+
+# 下面是特征选择模块
+# 计算特征图熵的近似值
+def feature_entropy_approx(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """
+    Compute a per-channel "entropy-like" scalar for real-valued feature maps.
+
+    Paper uses "Entropy of Feature Maps" as C×1. For continuous features,
+    an exact Shannon entropy isn't directly defined. A common surrogate is:
+
+      - interpret values along length L as a discrete distribution via softmax
+      - entropy = -sum(p log p)
+
+    Input:
+        x: [B, C, L]
+    Output:
+        ent: [B, C, 1]
+    """
+    p = F.softmax(x, dim=-1)  # [B,C,L], sum over L = 1
+    ent = -(p * (p + eps).log()).sum(dim=-1, keepdim=True)  # [B,C,1]
+    return ent
+
+
+# 那个policy网络
+class PolicyNetwork_SNR_AllC(nn.Module):
+    """
+    Policy network that outputs a prefix-selection decision over ALL C channels.
+
+    Action space: {0, 1, ..., C}
+      action K means: select first K channels (thermometer coding)
+
+    Inputs:
+      - z0 : [B, C, L]  (All Selective features = CAEM output)
+      - ent: [B, C, 1]  (entropy per channel)
+      - snr: [B] or [B,1]
+
+    Outputs:
+      - Mk     : [B, C, 1]      (thermometer / prefix mask)    这里可以考虑改一下 这样会导致可能有的样本一个channel都不选 可以改成前一半必选 后一半可选 就是注释的那个代码
+      - probs  : [B, C+1]       (soft action probabilities)
+      - onehot : [B, C+1]       (sampled action, one-hot)
+    """
+    def __init__(self, C: int, hidden: int = 128):
+        super().__init__()
+        self.C = C
+
+        # Following Fig.9 spirit:
+        #   concat entropy to feature map -> [B,C,L+1]
+        #   pooling over length -> [B,C]
+        #   concat SNR -> [B,C+1]
+        #   MLP -> logits over (C+1) actions (0..C)
+        self.mlp = nn.Sequential(
+            nn.Linear(C + 1, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, C + 1)
+        )
+
+    @staticmethod
+    def onehot_to_thermometer(onehot: torch.Tensor) -> torch.Tensor:
+        """
+        Convert action one-hot (0..C) to thermometer coding Mk of length C.
+
+        Example (C=5):
+          action=0 -> Mk=[0,0,0,0,0]
+          action=2 -> Mk=[1,1,0,0,0]
+          action=5 -> Mk=[1,1,1,1,1]
+        """
+        action = onehot.argmax(dim=-1)  # [B], 0..C
+        B = action.size(0)
+        C = onehot.size(1) - 1
+
+        idx = torch.arange(C, device=onehot.device).view(1, C)  # [1,C]
+        Mk = (idx < action.view(B, 1)).float()  # [B,C]
+        return Mk.unsqueeze(-1)  # [B,C,1]
+
+    def forward(self, z0: torch.Tensor, ent: torch.Tensor, snr: torch.Tensor,
+                tau: float = 1.0, hard: bool = True):
+        B, C, L = z0.shape
+        assert C == self.C, f"Expected C={self.C}, got C={C}"
+        snr = _snr_to_B1(snr)  # [B,1]
+
+        # concat entropy as an extra "position" along L: [B,C,L+1]
+        z_cat = torch.cat([z0, ent], dim=-1)
+
+        # pooling over length -> [B,C]
+        pooled = z_cat.mean(dim=-1)
+
+        # concat SNR -> [B,C+1]
+        feat = torch.cat([pooled, snr], dim=-1)
+
+        logits = self.mlp(feat)              # [B,C+1]
+        probs = F.softmax(logits, dim=-1)    # [B,C+1]
+
+        # Gumbel-Softmax sampling (differentiable)
+        onehot = F.gumbel_softmax(logits, tau=tau, hard=hard, dim=-1)  # [B,C+1]
+
+        # convert to thermometer mask over C channels
+        Mk = self.onehot_to_thermometer(onehot)  # [B,C,1]
+        return Mk, probs, onehot
+
+
+
+class FeatureMapSelectionModule_SNR_AllC(nn.Module):
+    """
+    Your modified Feature Map Selection Module:
+
+    - All Selective feature = CAEM output z0: [B,C,L]
+    - Entropy computed from z0
+    - Policy network uses (z0, entropy, SNR) -> Mk of size [B,C,1]
+    - Select: z1 = z0 * Mk (broadcast on L)
+
+    Outputs:
+      z1    : [B,C,L]      (fixed shape; "unselected" channels are zeroed)
+      Mk    : [B,C,1]      (mask over ALL channels)
+      ent   : [B,C,1]
+      probs : [B,C+1]
+    """
+    def __init__(self, C: int, hidden: int = 128):
+        super().__init__()
+        self.C = C
+        self.entropy_fn = feature_entropy_approx
+        self.policy = PolicyNetwork_SNR_AllC(C=C, hidden=hidden)
+
+    def forward(self, z0: torch.Tensor, snr: torch.Tensor,
+                tau: float = 1.0, hard: bool = True):
+        """
+        Inputs:
+          z0:  [B,C,L]  (CAEM output)
+          snr: [B] or [B,1]
+
+        Returns:
+          z1:   [B,C,L]
+          Mk:   [B,C,1]
+          ent:  [B,C,1]
+          probs:[B,C+1]
+          onehot:[B,C+1]
+        """
+        B, C, L = z0.shape
+        assert C == self.C, f"Expected C={self.C}, got C={C}"
+
+        ent = self.entropy_fn(z0)  # [B,C,1]
+        Mk, probs, onehot = self.policy(z0, ent, snr, tau=tau, hard=hard)  # Mk: [B,C,1]
+
+        # Apply mask to ALL channels
+        z1 = z0 * Mk  # broadcast over L -> [B,C,L]
+        return z1, Mk, ent, probs, onehot
+
+# # 如果是前一半必选 后一半可选的策略网络
+# class PolicyHalfPrefix(nn.Module):
+#     """
+#     Policy outputs an action in {0..C2} that means selecting first K channels
+#     within the ADAPTIVE half.
+#     """
+#     def __init__(self, C: int, hidden: int = 128):
+#         super().__init__()
+#         assert C % 2 == 0
+#         self.C = C
+#         self.C2 = C // 2
+#
+#         # Input: pooled features + SNR -> logits over (C2+1) actions
+#         self.mlp = nn.Sequential(
+#             nn.Linear(C + 1, hidden),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(hidden, self.C2 + 1)
+#         )
+#
+#     @staticmethod
+#     def onehot_to_thermometer(onehot: torch.Tensor) -> torch.Tensor:
+#         # onehot: [B, C2+1] -> Mk_adapt: [B, C2, 1]
+#         action = onehot.argmax(dim=-1)  # 0..C2
+#         B = action.size(0)
+#         C2 = onehot.size(1) - 1
+#         idx = torch.arange(C2, device=onehot.device).view(1, C2)
+#         Mk = (idx < action.view(B, 1)).float()
+#         return Mk.unsqueeze(-1)
+#
+#     def forward(self, z0: torch.Tensor, ent: torch.Tensor, snr: torch.Tensor,
+#                 tau: float = 1.0, hard: bool = True):
+#         # z0: [B,C,L], ent: [B,C,1]
+#         B, C, L = z0.shape
+#         snr = _snr_to_B1(snr)
+#
+#         # Fig.9 style: concat entropy then pool -> [B,C]
+#         z_cat = torch.cat([z0, ent], dim=-1)  # [B,C,L+1]
+#         pooled = z_cat.mean(dim=-1)           # [B,C]
+#         feat = torch.cat([pooled, snr], dim=-1)  # [B,C+1]
+#
+#         logits = self.mlp(feat)               # [B,C2+1]
+#         probs = F.softmax(logits, dim=-1)
+#         onehot = F.gumbel_softmax(logits, tau=tau, hard=hard, dim=-1)  # [B,C2+1]
+#         Mk_adapt = self.onehot_to_thermometer(onehot)  # [B,C2,1]
+#         return Mk_adapt, probs, onehot
+#
+#
+# class FeatureMapSelection_BasePlusAdaptive(nn.Module):
+#     """
+#     Base+Adaptive selection:
+#       - Base half: always selected (mask=1)
+#       - Adaptive half: policy decides (mask from policy)
+#
+#     Output mask Mk has shape [B,C,1] and is applied to all channels.
+#     """
+#     def __init__(self, C: int, hidden: int = 128, base_first_half: bool = True):
+#         super().__init__()
+#         assert C % 2 == 0
+#         self.C = C
+#         self.C2 = C // 2
+#         self.base_first_half = base_first_half
+#         self.policy = PolicyHalfPrefix(C=C, hidden=hidden)
+#
+#     def forward(self, z0: torch.Tensor, snr: torch.Tensor,
+#                 tau: float = 1.0, hard: bool = True):
+#         """
+#         z0: [B,C,L]  (CAEM output)
+#         snr: [B] or [B,1]
+#         """
+#         B, C, L = z0.shape
+#         assert C == self.C
+#
+#         ent = feature_entropy_approx(z0)  # [B,C,1]
+#
+#         Mk_adapt, probs, onehot = self.policy(z0, ent, snr, tau=tau, hard=hard)  # [B,C/2,1]
+#
+#         # Base mask = ones
+#         base = torch.ones(B, self.C2, 1, device=z0.device, dtype=z0.dtype)
+#
+#         # Concatenate to full Mk
+#         if self.base_first_half:
+#             # [base | adaptive]
+#             Mk = torch.cat([base, Mk_adapt], dim=1)  # [B,C,1]
+#         else:
+#             # [adaptive | base]
+#             Mk = torch.cat([Mk_adapt, base], dim=1)
+#
+#         z1 = z0 * Mk  # [B,C,L]
+#         return z1, Mk, ent, probs, onehot
+
+
+
+
+
+
+
+# -------------------------
+# quick test
+# -------------------------
+if __name__ == "__main__":
+    B, C, L = 5, 16, 128
+    z0 = torch.randn(B, C, L)       # pretend this is CAEM output
+    snr = torch.tensor([0., 2., 5., 10., 15.])
+
+    fms = FeatureMapSelectionModule_SNR_AllC(C=C, hidden=64)
+    z1, Mk, ent, probs, onehot = fms(z0, snr, tau=0.7, hard=True)
+
+    print("z1:", z1.shape)  # [B,C,L]
+    print("Mk:", Mk)  # [B,C,1]
+    # actual selected K per sample:
+    print("K per sample:", Mk.squeeze(-1).sum(dim=1))
+
+
+
