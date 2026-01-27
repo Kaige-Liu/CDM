@@ -1294,7 +1294,7 @@ if __name__ == "__main__":
     snr = torch.tensor([-5.0, 0.0, 5.0, 10.0, 15.0])  # [B]
     model = CAEM_Fig2_SNR_1D(C_in=31, C_out=16, use_resnet=True)  # 只需要这里的C_out控制一下输出的通道数即可
     y = model(x, snr)
-    print(y.shape)  # [4, 16, 128]
+    print(y.shape)  # [bs, 16, 128]
 
 
 
@@ -1420,7 +1420,7 @@ class FeatureMapSelectionModule_SNR_AllC(nn.Module):
         self.policy = PolicyNetwork_SNR_AllC(C=C, hidden=hidden)
 
     def forward(self, z0: torch.Tensor, snr: torch.Tensor,
-                tau: float = 1.0, hard: bool = True):
+                tau: float = 1.0, hard: bool = True):  # tau表示温度系数 作用是控制采样的平滑度
         """
         Inputs:
           z0:  [B,C,L]  (CAEM output)
@@ -1551,7 +1551,7 @@ if __name__ == "__main__":
     z1, Mk, ent, probs, onehot = fms(z0, snr, tau=0.7, hard=True)
 
     print("z1:", z1.shape)  # [B,C,L]
-    print("Mk:", Mk)  # [B,C,1]
+    print("Mk:", Mk.shape)  # [B,C,1]
     # actual selected K per sample:
     print("K per sample:", Mk.squeeze(-1).sum(dim=1))
 
@@ -1561,11 +1561,8 @@ if __name__ == "__main__":
 class Conv1dAggregator(nn.Module):
     """
     Lightweight 1D conv aggregator over token/length dimension L.
-
-    Input:
-        m: [B, 2C, L]   (matching features)
-    Output:
-        v: [B, H]       (aggregated vector)
+    Input:  m: [B, 2C, L]
+    Output: v: [B, H]
     """
     def __init__(self, in_channels: int, hidden_channels: int = 64, num_layers: int = 3, kernel_size: int = 3):
         super().__init__()
@@ -1575,37 +1572,28 @@ class Conv1dAggregator(nn.Module):
         layers = []
         c_in = in_channels
         c_h = hidden_channels
-
-        for i in range(num_layers):
+        for _ in range(num_layers):
             layers.append(nn.Conv1d(c_in, c_h, kernel_size=kernel_size, padding=padding))
             layers.append(nn.ReLU(inplace=True))
-            # optional: you can add dropout or norm here, but keep it simple for now
             c_in = c_h
 
         self.net = nn.Sequential(*layers)
 
     def forward(self, m: torch.Tensor) -> torch.Tensor:
-        # m: [B, 2C, L]
-        h = self.net(m)                 # [B, H, L]
-        v = h.mean(dim=-1)              # global average pooling over L -> [B, H]
+        h = self.net(m)      # [B, H, L]
+        v = h.mean(dim=-1)   # [B, H]
         return v
 
 # alice的分类网络，第一步是算差异与乘积（捕捉哪里一样和哪里不一样），然后conv1d聚合，最后mlp分类
-class VerificationDiscriminator(nn.Module):
+class VerificationDiscriminatorLN(nn.Module):
     """
-    Discriminator for your semantic verification task.
+    Verification discriminator with domain-alignment normalization (Principle 2 - method a).
 
     Inputs:
-        g      : [B, C, L]  (Alice-side features)
-        g_hat  : [B, C, L]  (Bob feedback features; from \hat{f} or \hat{f_eve})
+        g     : [B, C, L]  (Alice full feature)
+        g_hat : [B, C, L]  (Bob pruned/selected feature; many channels may be zeroed)
     Output:
-        p      : [B, 1]     (probability of "legitimate / from Alice")
-
-    Design:
-        1) token-wise matching features:
-             m = concat( |g - g_hat| , g * g_hat )  -> [B, 2C, L]
-        2) lightweight Conv1d aggregator over L
-        3) small MLP -> sigmoid probability
+        logits or probability of "legitimate"
     """
     def __init__(
         self,
@@ -1615,12 +1603,17 @@ class VerificationDiscriminator(nn.Module):
         agg_layers: int = 3,
         agg_kernel: int = 3,
         mlp_hidden: int = 64,
-        output_logits: bool = False,
+        output_logits: bool = True,
+        eps: float = 1e-5,
     ):
         super().__init__()
         self.C = C
         self.L = L
         self.output_logits = output_logits
+
+        # Token-wise LayerNorm over channel dimension C:
+        # apply LN to [B, L, C]
+        self.ln = nn.LayerNorm(C, eps=eps)
 
         self.aggregator = Conv1dAggregator(
             in_channels=2 * C,
@@ -1635,43 +1628,55 @@ class VerificationDiscriminator(nn.Module):
             nn.Linear(mlp_hidden, 1),
         )
 
+    def _tokenwise_channel_ln(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, C, L] -> apply LayerNorm over C at each token position -> [B, C, L]
+        """
+        # [B, C, L] -> [B, L, C]
+        x_t = x.transpose(1, 2)
+        # LN over last dim C
+        x_t = self.ln(x_t)
+        # back to [B, C, L]
+        return x_t.transpose(1, 2)
+
     def forward(self, g: torch.Tensor, g_hat: torch.Tensor) -> torch.Tensor:
-        """
-        g, g_hat: [B, C, L]
-        return:
-            logits if output_logits=True else sigmoid probability
-        """
-        assert g.dim() == 3 and g_hat.dim() == 3, "g and g_hat must be [B,C,L]"
+        assert g.dim() == 3 and g_hat.dim() == 3, "g and g_hat must be [B, C, L]"
         B, C, L = g.shape
-        assert g_hat.shape == (B, C, L), f"g_hat shape must match g. got {g_hat.shape}, expected {(B,C,L)}"
-        if self.C is not None:
-            assert C == self.C, f"Expected C={self.C}, got C={C}"
-        if self.L is not None:
-            assert L == self.L, f"Expected L={self.L}, got L={L}"
+        assert g_hat.shape == (B, C, L), f"g_hat must match g. got {g_hat.shape}, expected {(B,C,L)}"
+        assert C == self.C, f"Expected C={self.C}, got C={C}"
+        assert L == self.L, f"Expected L={self.L}, got L={L}"
+
+        # === Principle 2 (a): domain alignment via identical normalization ===
+        g_n = self._tokenwise_channel_ln(g)
+        g_hat_n = self._tokenwise_channel_ln(g_hat)
 
         # 1) token-wise matching features
-        diff = torch.abs(g - g_hat)      # [B,C,L]
-        prod = g * g_hat                 # [B,C,L]
+        diff = torch.abs(g_n - g_hat_n)     # [B,C,L]
+        prod = g_n * g_hat_n                # [B,C,L]
         m = torch.cat([diff, prod], dim=1)  # [B,2C,L]
 
         # 2) Conv1d aggregation over L
-        v = self.aggregator(m)           # [B, agg_hidden]
+        v = self.aggregator(m)              # [B, agg_hidden]
 
         # 3) MLP head
-        logits = self.mlp(v)             # [B,1]
+        logits = self.mlp(v)                # [B,1]
         if self.output_logits:
             return logits
         return torch.sigmoid(logits)
 
 
-# -------------------------
 # quick sanity check
-# -------------------------
 if __name__ == "__main__":
     B, C, L = 5, 8, 128
     g = torch.randn(B, C, L)
-    g_hat = torch.randn(B, C, L)  # 就是fms输出的z1
+    g_hat = torch.randn(B, C, L)
+    # simulate pruning: many zeros
+    g_hat[:, 4:, :] = 0.0
 
-    D = VerificationDiscriminator(C=C, L=L, output_logits=False)
-    p = D(g, g_hat)
-    print("p:", p.shape, p.min().item(), p.max().item())  # [B,1], in (0,1)
+    D = VerificationDiscriminatorLN(C=C, L=L, output_logits=True)
+    logits = D(g, g_hat)
+    print("logits:", logits.shape)
+    criterion = nn.BCEWithLogitsLoss()  # 注意损失函数要用这个
+    logits = D(g, g_hat)  # [B,1]
+    label = torch.ones_like(logits)
+    loss = criterion(logits, label)
