@@ -312,7 +312,7 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
-    snr = snr_db.expand(bs)  # 输入到snr网络中的snr 单位是db
+    snr = snr_db.expand(bs).float()  # 输入到snr网络中的snr 单位是db
 
     key = generate_key(args, src.shape)
 
