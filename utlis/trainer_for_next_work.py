@@ -429,7 +429,7 @@ def mac_accuracy_all(normal, eve1, eve2): # 返回的是检测成功率
 
     return (ct_normal + ct_eve1 + ct_eve2) / (normal.size(0) + eve1.size(0) + eve2.size(0))  # 返回总的准确率
 
-def greedy_decode(args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, src_eve, noise_std, max_len, padding_idx, start_symbol, channel):
+def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, src_eve, noise_std, max_len, padding_idx, start_symbol, channel):
     """
     这里采用贪婪解码器，如果需要更好的性能情况下，可以使用beam search decode
     """
@@ -443,13 +443,16 @@ def greedy_decode(args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Ev
     freeze_net(Alice_mapping, False)
     freeze_net(Bob_mapping, False)
     freeze_net(Eve_mapping, False)
+    freeze_net(CAEM_with_SNR, False)
+    freeze_net(fms, False)
+    freeze_net(alice_verifier, False)
 
     bs = src.size(0)
+    snr_lin = 1.0 / (noise_std ** 2)
+    snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
+    snr = snr_db.expand(bs).float()  # 输入到snr网络中的snr 单位是db
 
     key = generate_key(args, src.shape)
-    key_wrong = generate_key(args, src.shape)
-    while torch.equal(key, key_wrong):
-        key_wrong = generate_key(args, src.shape)
 
     Alice_ID = torch.randn(1, args.d_model).to(device)
     Bob_ID = torch.randn(1, args.d_model).to(device)
@@ -474,113 +477,63 @@ def greedy_decode(args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Ev
     src_mask_eve = (src_eve == padding_idx).unsqueeze(-2).type(torch.FloatTensor).to(device)  # [batch, 1, seq_len]
 
     key_ebd = key_ab(key)
-    key_ebd_wrong = key_ab(key_wrong)
     enc_output = deepsc.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)
     enc_output = enc_output[:, :31, :]  # 只前三十个通道
+    g = CAEM_with_SNR(enc_output, snr)  # alice得到的g
+
     enc_output_eve = deepsc.encoder(src_eve, src_mask_eve, Eve_kb_final, Bob_mapping_final)  # 第一类攻击
     enc_output_eve = enc_output_eve[:, :31, :]  # 只前31个通道
 
     mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
     mac_eve = eve.mac_encoder(enc_output_eve, Eve_kb_final, Bob_mapping_final)
 
-    # mac_wrong = alice_bob_mac.mac_encoder(key_ebd_wrong, enc_output)
-
     trg_inp = src[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
     trg_real = src[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
-    # trg_inp_eve = src_eve[:, :-1]
-    # trg_real_eve = src_eve[:, 1:]
-    # src_mask_eve, look_ahead_mask_eve = create_masks(src_eve, trg_inp_eve, padding_idx)
-    # enc_output_tamper = deepsc.encoder(src_eve, src_mask_eve, Eve_kb_final, Bob_mapping_final)  # 第二类攻击
-    # enc_output_tamper = enc_output_tamper[:, :31, :]  # 只前31个通道
-
-    # enc_output_eve = deepsc.encoder(src_eve, src_mask_eve)
 
     semantic_mac = torch.cat([enc_output, mac], dim=1)
     semantic_mac_eve = torch.cat([enc_output_eve, mac_eve], dim=1)  # 第一类攻击
-    semantic_mac_tamper = torch.cat([enc_output_eve, mac], dim=1)  # 第二类攻击
 
     channel_enc_output = deepsc.channel_encoder(semantic_mac)
     channel_enc_output_eve = deepsc.channel_encoder(semantic_mac_eve)
-    channel_enc_output_tamper = deepsc.channel_encoder(semantic_mac_tamper)
     Tx_sig = PowerNormalize(channel_enc_output)
     Tx_sig_eve = PowerNormalize(channel_enc_output_eve)
-    Tx_sig_tamper = PowerNormalize(channel_enc_output_tamper)
 
     if channel == 'AWGN':
         Rx_sig = channels.AWGN(Tx_sig, noise_std)  # 这个noise_std也是一个数
         Rx_sig_eve = channels.AWGN(Tx_sig_eve, noise_std)
-        Rx_sig_tamper = channels.AWGN(Tx_sig_tamper, noise_std)
     elif channel == 'Rayleigh':
         Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
         Rx_sig_eve = channels.Rayleigh(Tx_sig_eve, noise_std)
-        Rx_sig_tamper = channels.Rayleigh(Tx_sig_tamper, noise_std)
     elif channel == 'Rician':
         Rx_sig = channels.Rician(Tx_sig, noise_std)
         Rx_sig_eve = channels.Rician(Tx_sig_eve, noise_std)
-        Rx_sig_tamper = channels.Rician(Tx_sig_tamper, noise_std)
     else:
         raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
 
-    # channel_enc_output = model.blind_csi(channel_enc_output)
-
     memory = deepsc.channel_decoder(Rx_sig)
     memory_eve = deepsc.channel_decoder(Rx_sig_eve)
-    memory_tamper = deepsc.channel_decoder(Rx_sig_tamper)
 
     f_p = memory[:, :31, :]  # 前31个通道
-    f_p_eve = memory_eve[:, :31, :]
-    f_p_tamper = memory_tamper[:, :31, :]
+    f_eve_p = memory_eve[:, :31, :]
 
-    mac_p = memory[:, 31:, :]
-    mac_p_eve = memory_eve[:, 31:, :]
-    mac_p_tamper = memory_tamper[:, 31:, :]
+    # 下面就是那个映射
+    g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
+    g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
 
-    result = alice_bob_mac.mac_decoder(mac_p, f_p, key_ebd, Alice_mapping_final, Bob_kb_final)
-    result_eve = alice_bob_mac.mac_decoder(mac_p_eve, f_p_eve, key_ebd, Alice_mapping_final, Bob_kb_final)
-    result_tamper = alice_bob_mac.mac_decoder(mac_p_tamper, f_p_tamper, key_ebd, Alice_mapping_final, Bob_kb_final)
+    g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
+    g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
-    # 将result中的元素进行四舍五入(0 or 1)
-    result = torch.round(result)
-    result_eve = torch.round(result_eve)
-    result_tamper = torch.round(result_tamper)
+    # 然后进行判别
+    logits = alice_verifier(g, g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
 
-    targets = torch.ones(src.size(0), 1).float().to(device)  # 正向训练 全1
-    targets_eve = torch.zeros(src.size(0), 1).float().to(device)  # eve生成的mac全0
-    target_tamper = torch.zeros(src.size(0), 1).float().to(device)  # tamper全0
+    pred_pos = (logits >= 0).float()  # [bs,1]
+    alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
 
-    zheng_mac_accuracy = mac_accuracy(result, targets)  # 平均到batch_size之后的准确性
-    eve_mac_0_accuracy = mac_accuracy(result_eve, targets_eve)
-    tamper_0_accuracy = mac_accuracy(result_tamper, target_tamper)
-    accuracy = mac_accuracy_all(result, result_eve, result_tamper)
+    pred_neg = (logits_eve >= 0).float()  # [bs,1]
+    eve_0 = (1.0 - pred_neg).mean().item()  # 负样本正确率 = 预测为0的比例
 
-    outputs = torch.ones(src.size(0), 1).fill_(start_symbol).type_as(src.data)
-
-    for i in range(max_len - 1):  # 下面就是解码
-        # create the decode mask
-        trg_mask = (outputs == padding_idx).unsqueeze(-2).type(torch.FloatTensor).to(device)  # [batch, 1, seq_len]
-        look_ahead_mask = subsequent_mask(outputs.size(1)).type(torch.FloatTensor).to(device)
-        # print(look_ahead_mask)
-        combined_mask = torch.max(trg_mask, look_ahead_mask)
-        combined_mask = combined_mask.to(device)
-
-        # decode the received signal
-        dec_output = deepsc.decoder(outputs, f_p, combined_mask, src_mask, Alice_mapping_final, Bob_kb_final, mac_p)
-        pred = deepsc.dense(dec_output)
-
-        # predict the word
-        prob = pred[:, -1:, :]  # (batch_size, 1, vocab_size), 取最后一个单词的预测概率
-        #         # prob = prob.squeeze()
-
-        # return the max-prob index
-        _, next_word = torch.max(prob, dim=-1)
-        # next_word = next_word.unsqueeze(1)
-
-        # next_word = next_word.data[0]
-        outputs = torch.cat([outputs, next_word], dim=1)  # [bs, 30]
-
-    # return outputs, cos_similarity, zheng_mac_accuracy
-    # return outputs, zheng_mac_accuracy, eve_mac_0_accuracy, tamper_0_accuracy, key_0_accuracy
-    return outputs, accuracy, zheng_mac_accuracy, eve_mac_0_accuracy, tamper_0_accuracy
+    return alice_1, eve_0
 
 def train_mi(model, mi_net, src, n_var, padding_idx, opt, channel):
     mi_net.train()

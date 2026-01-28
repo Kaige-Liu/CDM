@@ -252,7 +252,7 @@ if __name__ == '__main__':
     initNetParams(alice_verifier)
 
 
-    checkpoint = torch.load(r'C:\d\final\CDM\checkpoints\checkpoint_109.pth')  # 之前三个检测率都最好
+    checkpoint = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/checkpoint_109.pth')  # 之前三个检测率都最好
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
