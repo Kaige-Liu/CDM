@@ -271,15 +271,15 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
 
     # 下面就是那个映射
     g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
-    g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
+    # g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
 
     g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
-    g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
+    # g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
 
     # 然后进行判别
-    logits = alice_verifier(g, g_pp)  # 判别结果
-    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
+    logits = alice_verifier(g, g_p)  # 判别结果
+    logits_eve = alice_verifier(g, g_eve_p)  # 判别eve结果
 
     label_1 = torch.ones_like(logits)
     loss_alice = criterion_bcelogits(logits, label_1)
@@ -390,14 +390,21 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
 
     # 下面就是那个映射
     g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
-    g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
+    # g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
 
     g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
-    g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
+    # g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
     # 然后进行判别
-    logits = alice_verifier(g, g_pp)  # 判别结果
-    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
+    logits = alice_verifier(g, g_p)  # 判别结果
+    logits_eve = alice_verifier(g, g_eve_p)  # 判别eve结果
+
+    pred_pos = (logits >= 0).float()  # [bs,1]
+    alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
+
+    pred_neg = (logits_eve >= 0).float()  # [bs,1]
+    eve_0 = (1.0 - pred_neg).mean().item()  # 负样本正确率 = 预测为0的比例
+
 
     label_1 = torch.ones_like(logits)
     loss_alice_test = criterion_bcelogits(logits, label_1)
@@ -405,7 +412,7 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
     label_0 = torch.zeros_like(logits_eve)
     loss_eve_test = criterion_bcelogits(logits_eve, label_0)
 
-    return loss_alice_test.item(), loss_eve_test.item()
+    return loss_alice_test.item(), loss_eve_test.item(), alice_1, eve_0
 
 
 def mac_accuracy_all(normal, eve1, eve2): # 返回的是检测成功率
