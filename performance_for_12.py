@@ -165,7 +165,7 @@ if __name__ == '__main__':
     alice_verifier = VerificationDiscriminatorLN(C=16, L=128, output_logits=True).to(device)  # alice的验证器 128是特征长度
 
     checkpoint = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/checkpoint_109.pth')
-    checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-01-29-06_26_30/checkpoint_399_1.0_1.0.pth')  # 12部分的那三个网络
+    checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-01-28-04_55_28/checkpoint_399.pth')  # 12部分的那三个网络
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']

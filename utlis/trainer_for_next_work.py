@@ -271,15 +271,15 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
 
     # 下面就是那个映射
     g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
-    # g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
+    g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
 
     g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
-    # g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
+    g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
 
     # 然后进行判别
-    logits = alice_verifier(g, g_p)  # 判别结果
-    logits_eve = alice_verifier(g, g_eve_p)  # 判别eve结果
+    logits = alice_verifier(g, g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
 
     label_1 = torch.ones_like(logits)
     loss_alice = criterion_bcelogits(logits, label_1)
@@ -389,14 +389,14 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
 
     # 下面就是那个映射
     g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
-    # g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
+    g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
 
     g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
-    # g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
+    g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
     # 然后进行判别
-    logits = alice_verifier(g, g_p)  # 判别结果
-    logits_eve = alice_verifier(g, g_eve_p)  # 判别eve结果
+    logits = alice_verifier(g, g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]
     alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
@@ -527,14 +527,14 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
 
     # 下面就是那个映射
     g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
-    # g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
+    g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
 
     g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
-    # g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
+    g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
     # 然后进行判别
-    logits = alice_verifier(g, g_p)  # 判别结果
-    logits_eve = alice_verifier(g, g_eve_p)  # 判别eve结果
+    logits = alice_verifier(g, g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]
     alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
