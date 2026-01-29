@@ -297,16 +297,6 @@ if __name__ == '__main__':
 
     # 联合训练的优化器
     optimizer_joint = torch.optim.Adam(
-        list(deepsc.parameters()) +
-        list(alice_bob_mac.parameters()) +
-        list(key_ab.parameters()) +
-        list(eve.parameters()) +
-        list(Alice_KB.parameters()) +
-        list(Bob_KB.parameters()) +
-        list(Eve_KB.parameters()) +
-        list(Alice_mapping.parameters()) +
-        list(Bob_mapping.parameters()) +
-        list(Eve_mapping.parameters()) +
         list(CAEM_with_SNR.parameters()) +
         list(fms.parameters()) +
         list(alice_verifier.parameters()),

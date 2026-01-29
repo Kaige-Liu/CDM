@@ -193,7 +193,7 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
 
     channels = Channels()
     bs = args.batch_size
-    snr_min, snr_max = -5.0, 10.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    snr_min, snr_max = -5.0, 20.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
@@ -307,7 +307,7 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
 
     channels = Channels()
     bs = src.size(0)
-    snr_min, snr_max = -5.0, 10.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    snr_min, snr_max = -5.0, 20.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
@@ -674,8 +674,10 @@ class Channels():
 
     def Rayleigh(self, Tx_sig, n_var):
         shape = Tx_sig.shape
-        H_real = torch.normal(0, math.sqrt(1 / 2), size=[1]).to(device)
-        H_imag = torch.normal(0, math.sqrt(1 / 2), size=[1]).to(device)
+        # H_real = torch.normal(0, math.sqrt(1 / 2), size=[1]).to(device)
+        # H_imag = torch.normal(0, math.sqrt(1 / 2), size=[1]).to(device)
+        H_real = np.random.normal(0, math.sqrt(1 / 2))
+        H_imag = np.random.normal(0, math.sqrt(1 / 2))
         H = torch.Tensor([[H_real, -H_imag], [H_imag, H_real]]).to(device)
         Tx_sig = torch.matmul(Tx_sig.view(shape[0], -1, 2), H)
         Rx_sig = self.AWGN(Tx_sig, n_var)
