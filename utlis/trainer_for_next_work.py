@@ -445,6 +445,13 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     src_mask, look_ahead_mask = create_masks(src, trg_inp, pad)
     src_mask_eve, look_ahead_mask_eve = create_masks(src_eve, trg_inp_eve, pad)
 
+    perm = torch.randperm(bs, device=src.device)
+    src_neg = src[perm]
+    trg_inp_neg = src_neg[:, :-1]
+    trg_real_neg = src_neg[:, 1:]
+    src_mask_neg, look_ahead_mask_neg = create_masks(src_neg, trg_inp_neg, pad)
+
+
     channels = Channels()
     bs = src.size(0)
     snr_lin = 1.0 / (noise_std ** 2)
@@ -504,10 +511,17 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     mac_eve = eve.mac_encoder(enc_output_eve, Eve_kb_final, Bob_mapping_final)
     semantic_mac_eve = torch.cat([enc_output_eve, mac_eve], dim=1)
 
+    # enc_output_neg = deepsc.encoder(src_neg, src_mask_neg, Alice_kb_final, Bob_mapping_final)
+    # enc_output_neg = enc_output_neg[:, :31, :]  # 只前31个通道
+    # mac_neg = alice_bob_mac.mac_encoder(key_ebd, enc_output_neg, Alice_kb_final, Bob_mapping_final)
+    # semantic_mac_neg = torch.cat([enc_output_neg, mac_neg], dim=1)
+
     channel_enc_output = deepsc.channel_encoder(semantic_mac)
     channel_enc_output_eve = deepsc.channel_encoder(semantic_mac_eve)
+    # channel_enc_output_neg = deepsc.channel_encoder(semantic_mac_neg)
     Tx_sig = PowerNormalize(channel_enc_output)
     Tx_sig_eve = PowerNormalize(channel_enc_output_eve)
+    # Tx_sig_neg = PowerNormalize(channel_enc_output_neg)
 
     if channel == 'AWGN':
         Rx_sig = channels.AWGN(Tx_sig, noise_std)
@@ -515,6 +529,7 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     elif channel == 'Rayleigh':
         Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
         Rx_sig_eve = channels.Rayleigh(Tx_sig_eve, noise_std)
+        # Rx_sig_neg = channels.Rayleigh(Tx_sig_neg, noise_std)
     elif channel == 'Rician':
         Rx_sig = channels.Rician(Tx_sig, noise_std)
         Rx_sig_eve = channels.Rician(Tx_sig_eve, noise_std)
@@ -522,25 +537,34 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
         raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
     channel_dec_output = deepsc.channel_decoder(Rx_sig)
     channel_dec_output_eve = deepsc.channel_decoder(Rx_sig_eve)
+    # channel_dec_output_neg = deepsc.channel_decoder(Rx_sig_neg)
     f_p = channel_dec_output[:, :31, :]  # 前31个通道 发送的时候也是
     f_eve_p = channel_dec_output_eve[:, :31, :]  # 前31个通道 发送的时候也是
+    # f_neg_p = channel_dec_output_neg[:, :31, :]  # 前31个通道 发送的时候也是
 
     # 下面就是那个映射
     g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
     g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
 
-    g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
+    g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # bob得到的g'
     g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
+
+    # g_neg_p = CAEM_with_SNR(f_neg_p, snr)  # bob得到的g'
+    # g_neg_pp, Mk_neg, ent_neg, probs_neg, onehot_neg = fms(g_neg_p, snr, tau=0.7, hard=True)  # 经过筛选的g_neg'
 
     # 然后进行判别
     logits = alice_verifier(g, g_pp)  # 判别结果
     logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
+    # logits_neg = alice_verifier(g, g_neg_pp)  # 判别neg结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]
     alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
 
     pred_neg = (logits_eve >= 0).float()  # [bs,1]
     eve_0 = (1.0 - pred_neg).mean().item()  # 负样本正确率 = 预测为0的比例
+
+    # pred_neg_neg = (logits_neg >= 0).float()  # [bs,1]
+    # neg_0 = (1.0 - pred_neg_neg).mean().item()  # 负样本正确率 = 预测为0的比例
 
     return alice_1, eve_0
 
