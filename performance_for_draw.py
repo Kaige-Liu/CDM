@@ -8,10 +8,14 @@ import torch.nn as nn
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
+from draw.hot import plot_confusion_matrix_seaborn
+from draw.pr import plot_multi_pr_sci
+from draw.roc import plot_multi_roc_sci
 from models.transceiver import DeepSC, Key_net, Attacker, MAC, CAEM_Fig2_SNR_1D, FeatureMapSelectionModule_SNR_AllC, \
     VerificationDiscriminatorLN
 from utlis.tools import SNR_to_noise, SeqtoText, BleuScore
-from utlis.trainer_for_next_work import train_step, val_step, train_mi, greedy_decode, initNetParams
+from utlis.trainer_for_next_work import train_step, val_step, train_mi, greedy_decode, initNetParams, \
+    greedy_decode_for_draw
 from dataset.dataloader import return_iter, return_iter_10, return_iter_eve
 from models.transceiver import DeepSC, Key_net, Attacker, MAC, KnowledgeBase, KB_Mapping
 from models.mutual_info import Mine
@@ -48,18 +52,59 @@ parser.add_argument('--decoder-dropout', default=0.1, type=float, help='The deco
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
+def update_roc_buffers(logits_pos, logits_eve, logits_perm, scores_list, labels_list):
+    """
+    logits_pos : alice_verifier(g, channel_dec_g_pp)        -> 正样本 logits
+    logits_eve : alice_verifier(g, channel_dec_g_eve_pp)    -> 负样本 logits
+    logits_perm: alice_verifier(g, channel_dec_g_pp_perm)   -> 负样本 logits
+
+    scores_list/labels_list: Python list，用来跨 batch 累积
+    """
+
+    # BCEWithLogitsLoss -> ROC 必须用 sigmoid 概率（0~1）
+    s_pos  = torch.sigmoid(logits_pos).view(-1).detach().cpu()
+    s_eve  = torch.sigmoid(logits_eve).view(-1).detach().cpu()
+    s_perm = torch.sigmoid(logits_perm).view(-1).detach().cpu()
+
+    # 标签：正样本=1，负样本=0
+    y_pos  = torch.ones_like(s_pos)
+    y_eve  = torch.zeros_like(s_eve)
+    y_perm = torch.zeros_like(s_perm)
+
+    # 拼到 list（注意：这里先 append tensor，最后再 cat）
+    scores_list.append(s_pos);  labels_list.append(y_pos)
+    scores_list.append(s_eve);  labels_list.append(y_eve)
+    scores_list.append(s_perm); labels_list.append(y_perm)
+
+
+def update_confusion_counts(logits_pos, logits_eve, logits_perm, cm, threshold=0.5):
+    # probs
+    p_pos  = torch.sigmoid(logits_pos).view(-1)
+    p_eve  = torch.sigmoid(logits_eve).view(-1)
+    p_perm = torch.sigmoid(logits_perm).view(-1)
+
+    # preds
+    pred_pos  = (p_pos  >= threshold).long()
+    pred_eve  = (p_eve  >= threshold).long()
+    pred_perm = (p_perm >= threshold).long()
+
+    # True=1 for pos
+    cm['TP'] += int((pred_pos == 1).sum().item())
+    cm['FN'] += int((pred_pos == 0).sum().item())
+
+    # True=0 for neg (eve + perm)
+    cm['FP'] += int((pred_eve == 1).sum().item())
+    cm['TN'] += int((pred_eve == 0).sum().item())
+
+    cm['FP'] += int((pred_perm == 1).sum().item())
+    cm['TN'] += int((pred_perm == 0).sum().item())
+
 # 需要对解码数据进行BLEU分数计算
 # 输入是解码结果、原文、以及
 def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping):
     test_iterator = return_iter(args, 'test')
     test_iterator_eve = return_iter_eve(args, 'test')
     iter_eve = iter(test_iterator_eve)
-
-    StoT = SeqtoText(token_to_idx, end_idx)
-    score = []
-    alice_list = []
-    eve_list = []
-    perm_list = []
 
     deepsc.eval()
     key_ab.eval()
@@ -75,20 +120,16 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
     fms.eval()
     alice_verifier.eval()
 
+    curves = []
 
     with torch.no_grad():
         for epoch in range(args.epochs):
-            alice_list_tmp = []
-            eve_list_tmp = []
-            perm_list_tmp = []
-
-            for snr in tqdm(SNR):  # 对每个信噪比 所有的数据
-                # snr就是一个数
+            for snr in tqdm(SNR):
                 noise_std = SNR_to_noise(snr)
+                # 每个 SNR 单独收集
+                scores_list, labels_list = [], []
+                cm = {'TP': 0, 'FP': 0, 'TN': 0, 'FN': 0}
 
-                total_alice = 0
-                total_eve = 0
-                total_perm = 0
                 for sents in test_iterator:
                     sents = sents.to(device)
                     try:
@@ -96,39 +137,45 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
                     except:
                         iter_eve = iter(test_iterator_eve)
                         sents_eve = next(iter_eve).to(device)
-                    alice_1, eve_0, perm_0 = greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
-                                                                                        sents, sents_eve,
-                                                                                        noise_std, args.MAX_LENGTH,
-                                                                                        pad_idx,
-                                                                                        start_idx, args.channel)
-                    total_alice += alice_1
-                    total_eve += eve_0
-                    total_perm += perm_0
 
-                average_alice = total_alice / len(test_iterator)  # 当前信噪比下的平均准确率(一个数)
-                average_eve = total_eve / len(test_iterator)
-                average_perm = total_perm / len(test_iterator)
+                    logits, logits_eve, logits_perm = greedy_decode_for_draw(
+                        CAEM_with_SNR, fms, alice_verifier, args, deepsc,
+                        alice_bob_mac, key_ab, eve,
+                        Alice_KB, Bob_KB, Eve_KB,
+                        Alice_mapping, Bob_mapping, Eve_mapping,
+                        sents, sents_eve,
+                        noise_std, args.MAX_LENGTH,
+                        pad_idx, start_idx, args.channel
+                    )
 
-                alice_list_tmp.append(average_alice)
-                eve_list_tmp.append(average_eve)
-                perm_list_tmp.append(average_perm)
+                    # 把这个 batch 的3组logits加入当前snr的buffer
+                    update_roc_buffers(logits, logits_eve, logits_perm,
+                                       scores_list, labels_list)
 
-            alice_list.append(alice_list_tmp)
-            eve_list.append(eve_list_tmp)
-            perm_list.append(perm_list_tmp)
+                    update_confusion_counts(logits, logits_eve, logits_perm, cm, threshold=0.5)
 
-    alice_score = np.mean(np.array(alice_list), axis=0)
-    eve_score = np.mean(np.array(eve_list), axis=0)
-    perm_score = np.mean(np.array(perm_list), axis=0)
+                y_score = torch.cat(scores_list).numpy()
+                y_true = torch.cat(labels_list).numpy()
+                curves.append({'snr': snr, 'y_true': y_true, 'y_score': y_score})
 
-    return alice_score, eve_score, perm_score
+                plot_confusion_matrix_seaborn(
+                    cm,
+                    save_path=f'cm_snr_{snr}dB.png',
+                    title=f'Confusion Matrix (SNR={snr} dB, thr=0.5)',
+                    normalize=True
+                )
+
+    plot_multi_roc_sci(curves, save_path='roc_multi_snr.png')
+    plot_multi_pr_sci(curves, save_path='pr_multi_snr.png')
+
+    # return alice_score, eve_score, perm_score
 
 
 
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    SNR = [-9, -6, -3, 0, 3, 6, 9, 12, 15, 18]
+    SNR = [-3, 0, 3]
     args.vocab_file = args.vocab_file
     vocab = json.load(open(args.vocab_file, 'rb'))
     token_to_idx = vocab['token_to_idx']
@@ -173,7 +220,7 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/checkpoint_109.pth')
     # checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-01-29-17_55_16/checkpoint_399_0.9968_0.9851.pth')  # 12部分的那三个网络
-    checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-04-03_14_43/checkpoint_60_0.9101_0.9533.pth_0.9027.pth')
+    checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-04-03_14_43/checkpoint_21_0.7213_0.9040.pth_0.9059.pth')
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
@@ -217,11 +264,6 @@ if __name__ == '__main__':
     fms = fms.to(device)
     alice_verifier = alice_verifier.to(device)
 
-    alice_score, eve_score, perm_score = performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
-    print("alice检测准确率：")
-    print(alice_score)
-    print("eve检测准确率：")
-    print(eve_score)
-    print("alice打乱样本检测准确率：")
-    print(perm_score)
+    performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
+
 

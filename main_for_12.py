@@ -264,7 +264,7 @@ if __name__ == '__main__':
 
 
     checkpoint = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/checkpoint_109.pth')  # 之前三个检测率都最好
-    checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-04-01_51_11/checkpoint_12_0.1665_0.9798.pth_0.8343.pth')
+    checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-03-16_52_04/checkpoint_28_0.7066_0.9751.pth')
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']

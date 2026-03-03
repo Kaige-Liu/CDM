@@ -315,7 +315,7 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
 
     loss_perm = criterion_bcelogits(logits_perm, label_0)
 
-    loss = 2 * loss_alice + 0.5 * loss_eve + loss_perm
+    loss = 1.5 * loss_alice + 0.5 * loss_eve + 2 * loss_perm
 
     opt_joint.zero_grad()
     loss.backward()
@@ -650,6 +650,165 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     perm_0 = (1.0 - pred_perm).mean().item()  # 打乱样本正确率 = 预测为0的比例
 
     return alice_1, eve_0, perm_0
+
+
+def greedy_decode_for_draw(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, src_eve, noise_std, max_len, pad, start_symbol, channel):
+    trg_inp = src[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
+    trg_real = src[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
+    trg_inp_eve = src_eve[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
+    trg_real_eve = src_eve[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
+
+    bs = args.batch_size
+    src_mask, look_ahead_mask = create_masks(src, trg_inp, pad)
+    src_mask_eve, look_ahead_mask_eve = create_masks(src_eve, trg_inp_eve, pad)
+
+    perm = torch.randperm(bs, device=src.device)
+    src_neg = src[perm]
+    trg_inp_neg = src_neg[:, :-1]
+    trg_real_neg = src_neg[:, 1:]
+    src_mask_neg, look_ahead_mask_neg = create_masks(src_neg, trg_inp_neg, pad)
+
+
+    channels = Channels()
+    bs = src.size(0)
+    snr_lin = 1.0 / (noise_std ** 2)
+    snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
+    snr = snr_db.expand(bs).float()  # 输入到snr网络中的snr 单位是db
+
+    key = generate_key(args, src.shape)
+
+    freeze_net(key_ab, False)
+    freeze_net(alice_bob_mac, False)
+    freeze_net(eve, False)
+    freeze_net(deepsc, False)
+    freeze_net(Alice_KB, False)
+    freeze_net(Bob_KB, False)
+    freeze_net(Eve_KB, False)
+    freeze_net(Alice_mapping, False)
+    freeze_net(Bob_mapping, False)
+    freeze_net(Eve_mapping, False)
+    freeze_net(CAEM_with_SNR, False)
+    freeze_net(fms, False)
+    freeze_net(alice_verifier, False)
+
+    args.vocab_file = args.vocab_file
+    vocab = json.load(open(args.vocab_file, 'rb'))
+    token_to_idx = vocab['token_to_idx']
+    pad_idx = token_to_idx["<PAD>"]
+    start_idx = token_to_idx["<START>"]
+    end_idx = token_to_idx["<END>"]
+
+    Alice_ID = torch.randn(1, args.d_model).to(device)
+    Bob_ID = torch.randn(1, args.d_model).to(device)
+    Eve_ID = torch.randn(1, args.d_model).to(device)
+    Alice_tmp = Alice_KB(Alice_ID)  # 这就是知识库 不断的更新 只有最开始的一轮才是真正的ID，形状是[8, 128]
+    Bob_tmp = Bob_KB(Bob_ID)
+    Eve_tmp = Eve_KB(Eve_ID)
+    Alice_mapping_tmp = Alice_mapping(Alice_tmp)  # 形状是[8, 128]
+    Bob_mapping_tmp = Bob_mapping(Bob_tmp)
+    Eve_mapping_tmp = Eve_mapping(Eve_tmp)
+    Alice_kb_final = Alice_tmp.repeat(bs, 1, 1)  # 进行复制
+    Bob_kb_final = Bob_tmp.repeat(bs, 1, 1)
+    Eve_kb_final = Eve_tmp.repeat(bs, 1, 1)
+    Alice_mapping_final = Alice_mapping_tmp.repeat(bs, 1, 1)
+    Bob_mapping_final = Bob_mapping_tmp.repeat(bs, 1, 1)
+    Eve_mapping_final = Eve_mapping_tmp.repeat(bs, 1, 1)
+
+    # 先测一下deepsc的性能
+    key_ebd = key_ab(key)  # 生成密钥
+
+    enc_output = deepsc.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)  # f
+    enc_output = enc_output[:, :31, :]  # 只前31个通道 f
+    mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
+    semantic_mac = torch.cat([enc_output, mac], dim=1)
+    g = CAEM_with_SNR(enc_output, snr)  # alice得到的g
+
+    enc_output_eve = deepsc.encoder(src_eve, src_mask_eve, Eve_kb_final, Bob_mapping_final)  # f
+    enc_output_eve = enc_output_eve[:, :31, :]  # 只前31个通道
+    mac_eve = eve.mac_encoder(enc_output_eve, Eve_kb_final, Bob_mapping_final)
+    semantic_mac_eve = torch.cat([enc_output_eve, mac_eve], dim=1)
+
+    # enc_output_neg = deepsc.encoder(src_neg, src_mask_neg, Alice_kb_final, Bob_mapping_final)
+    # enc_output_neg = enc_output_neg[:, :31, :]  # 只前31个通道
+    # mac_neg = alice_bob_mac.mac_encoder(key_ebd, enc_output_neg, Alice_kb_final, Bob_mapping_final)
+    # semantic_mac_neg = torch.cat([enc_output_neg, mac_neg], dim=1)
+
+    channel_enc_output = deepsc.channel_encoder(semantic_mac)
+    channel_enc_output_eve = deepsc.channel_encoder(semantic_mac_eve)
+    # channel_enc_output_neg = deepsc.channel_encoder(semantic_mac_neg)
+    Tx_sig = PowerNormalize(channel_enc_output)
+    Tx_sig_eve = PowerNormalize(channel_enc_output_eve)
+    # Tx_sig_neg = PowerNormalize(channel_enc_output_neg)
+
+    if channel == 'AWGN':
+        Rx_sig = channels.AWGN(Tx_sig, noise_std)
+        Rx_sig_eve = channels.AWGN(Tx_sig_eve, noise_std)
+    elif channel == 'Rayleigh':
+        Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
+        Rx_sig_eve = channels.Rayleigh(Tx_sig_eve, noise_std)
+        # Rx_sig_neg = channels.Rayleigh(Tx_sig_neg, noise_std)
+    elif channel == 'Rician':
+        Rx_sig = channels.Rician(Tx_sig, noise_std)
+        Rx_sig_eve = channels.Rician(Tx_sig_eve, noise_std)
+    else:
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+    channel_dec_output = deepsc.channel_decoder(Rx_sig)
+    channel_dec_output_eve = deepsc.channel_decoder(Rx_sig_eve)
+    # channel_dec_output_neg = deepsc.channel_decoder(Rx_sig_neg)
+    f_p = channel_dec_output[:, :31, :]  # 前31个通道 发送的时候也是
+    f_eve_p = channel_dec_output_eve[:, :31, :]  # 前31个通道 发送的时候也是
+    # f_neg_p = channel_dec_output_neg[:, :31, :]  # 前31个通道 发送的时候也是
+
+    # 下面就是那个映射
+    g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
+    g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
+
+    g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # bob得到的g'
+    g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
+
+    # g_neg_p = CAEM_with_SNR(f_neg_p, snr)  # bob得到的g'
+    # g_neg_pp, Mk_neg, ent_neg, probs_neg, onehot_neg = fms(g_neg_p, snr, tau=0.7, hard=True)  # 经过筛选的g_neg'
+
+    # 我这里让g_pp和g_eve_pp过一遍信道试试
+    channel_enc_g_pp = deepsc.channel_encoder(g_pp)
+    channel_enc_g_eve_pp = deepsc.channel_encoder(g_eve_pp)
+    Tx_sig_g_pp = PowerNormalize(channel_enc_g_pp)
+    Tx_sig_g_eve_pp = PowerNormalize(channel_enc_g_eve_pp)
+    if channel == 'AWGN':
+        Rx_sig_g_pp = channels.AWGN(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.AWGN(Tx_sig_g_eve_pp, noise_std)
+    elif channel == 'Rayleigh':
+        Rx_sig_g_pp = channels.Rayleigh(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.Rayleigh(Tx_sig_g_eve_pp, noise_std)
+    elif channel == 'Rician':
+        Rx_sig_g_pp = channels.Rician(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.Rician(Tx_sig_g_eve_pp, noise_std)
+    else:
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+    channel_dec_g_pp = deepsc.channel_decoder(Rx_sig_g_pp)
+    channel_dec_g_eve_pp = deepsc.channel_decoder(Rx_sig_g_eve_pp)
+
+    perm = torch.randperm(bs, device=device)
+    if perm.equal(torch.arange(bs, device=device)):
+        perm = torch.randperm(bs, device=device)
+    channel_dec_g_pp_perm = channel_dec_g_pp[perm]
+
+    # 然后进行判别
+    logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
+    logits_perm = alice_verifier(g, channel_dec_g_pp_perm)  # 判别打乱后的结果
+
+    # pred_pos = (logits >= 0).float()  # [bs,1]
+    # alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
+    #
+    # pred_neg = (logits_eve >= 0).float()  # [bs,1]
+    # eve_0 = (1.0 - pred_neg).mean().item()  # 负样本正确率 = 预测为0的比例
+    #
+    # pred_perm = (logits_perm >= 0).float()  # [bs,1]
+    # perm_0 = (1.0 - pred_perm).mean().item()  # 打乱样本正确率 = 预测为0的比例
+
+    return logits, logits_eve, logits_perm
+
 
 def train_mi(model, mi_net, src, n_var, padding_idx, opt, channel):
     mi_net.train()
