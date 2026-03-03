@@ -276,10 +276,32 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
     g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
     g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
+    # 我这里让g_pp和g_eve_pp过一遍信道试试
+    channel_enc_g_pp = model.channel_encoder(g_pp)
+    channel_enc_g_eve_pp = model.channel_encoder(g_eve_pp)
+    Tx_sig_g_pp = PowerNormalize(channel_enc_g_pp)
+    Tx_sig_g_eve_pp = PowerNormalize(channel_enc_g_eve_pp)
+    if channel == 'AWGN':
+        Rx_sig_g_pp = channels.AWGN(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.AWGN(Tx_sig_g_eve_pp, noise_std)
+    elif channel == 'Rayleigh':
+        Rx_sig_g_pp = channels.Rayleigh(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.Rayleigh(Tx_sig_g_eve_pp, noise_std)
+    elif channel == 'Rician':
+        Rx_sig_g_pp = channels.Rician(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.Rician(Tx_sig_g_eve_pp, noise_std)
+    else:
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+    channel_dec_g_pp = model.channel_decoder(Rx_sig_g_pp)
+    channel_dec_g_eve_pp = model.channel_decoder(Rx_sig_g_eve_pp)
+
+
+
+
 
     # 然后进行判别
-    logits = alice_verifier(g, g_pp)  # 判别结果
-    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
+    logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
 
     label_1 = torch.ones_like(logits)
     loss_alice = criterion_bcelogits(logits, label_1)
@@ -394,9 +416,29 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
     g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
     g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
+    # 我这里让g_pp和g_eve_pp过一遍信道试试
+    channel_enc_g_pp = model.channel_encoder(g_pp)
+    channel_enc_g_eve_pp = model.channel_encoder(g_eve_pp)
+    Tx_sig_g_pp = PowerNormalize(channel_enc_g_pp)
+    Tx_sig_g_eve_pp = PowerNormalize(channel_enc_g_eve_pp)
+    if channel == 'AWGN':
+        Rx_sig_g_pp = channels.AWGN(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.AWGN(Tx_sig_g_eve_pp, noise_std)
+    elif channel == 'Rayleigh':
+        Rx_sig_g_pp = channels.Rayleigh(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.Rayleigh(Tx_sig_g_eve_pp, noise_std)
+    elif channel == 'Rician':
+        Rx_sig_g_pp = channels.Rician(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.Rician(Tx_sig_g_eve_pp, noise_std)
+    else:
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+    channel_dec_g_pp = model.channel_decoder(Rx_sig_g_pp)
+    channel_dec_g_eve_pp = model.channel_decoder(Rx_sig_g_eve_pp)
+
+
     # 然后进行判别
-    logits = alice_verifier(g, g_pp)  # 判别结果
-    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
+    logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]
     alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
@@ -552,9 +594,31 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     # g_neg_p = CAEM_with_SNR(f_neg_p, snr)  # bob得到的g'
     # g_neg_pp, Mk_neg, ent_neg, probs_neg, onehot_neg = fms(g_neg_p, snr, tau=0.7, hard=True)  # 经过筛选的g_neg'
 
+    # 我这里让g_pp和g_eve_pp过一遍信道试试
+    channel_enc_g_pp = deepsc.channel_encoder(g_pp)
+    channel_enc_g_eve_pp = deepsc.channel_encoder(g_eve_pp)
+    Tx_sig_g_pp = PowerNormalize(channel_enc_g_pp)
+    Tx_sig_g_eve_pp = PowerNormalize(channel_enc_g_eve_pp)
+    if channel == 'AWGN':
+        Rx_sig_g_pp = channels.AWGN(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.AWGN(Tx_sig_g_eve_pp, noise_std)
+    elif channel == 'Rayleigh':
+        Rx_sig_g_pp = channels.Rayleigh(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.Rayleigh(Tx_sig_g_eve_pp, noise_std)
+    elif channel == 'Rician':
+        Rx_sig_g_pp = channels.Rician(Tx_sig_g_pp, noise_std)
+        Rx_sig_g_eve_pp = channels.Rician(Tx_sig_g_eve_pp, noise_std)
+    else:
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+    channel_dec_g_pp = deepsc.channel_decoder(Rx_sig_g_pp)
+    channel_dec_g_eve_pp = deepsc.channel_decoder(Rx_sig_g_eve_pp)
+
+
+
+
     # 然后进行判别
-    logits = alice_verifier(g, g_pp)  # 判别结果
-    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
+    logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
     # logits_neg = alice_verifier(g, g_neg_pp)  # 判别neg结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]
