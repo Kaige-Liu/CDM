@@ -98,7 +98,7 @@ def train(CAEM_with_SNR, fms, alice_verifier, epoch, args, net, alice_bob_mac, k
                 )
             )
         else:
-            loss_alice, loss_eve = train_step(CAEM_with_SNR, fms, alice_verifier,
+            loss, acc_top1 = train_step(CAEM_with_SNR, fms, alice_verifier,
                                     args, epoch, batch, net,
                                     alice_bob_mac, key_ab, eve,
                                     Alice_KB, Bob_KB, Eve_KB,
@@ -109,8 +109,8 @@ def train(CAEM_with_SNR, fms, alice_verifier, epoch, args, net, alice_bob_mac, k
                                     optimizer_joint,
                                     args.channel)
 
-            total_alice += loss_alice
-            total_eve += loss_eve
+            total_alice += loss
+            total_eve += acc_top1
 
         batch += 1
 
@@ -159,12 +159,12 @@ def validate(CAEM_with_SNR, fms, alice_verifier, epoch, args, net, alice_bob_mac
                 pbar_eve_iter = iter(pbar_eve)
                 sents_eve = next(pbar_eve_iter).to(device)
 
-            loss_alice, loss_eve, alice_1, eve_0 = val_step(CAEM_with_SNR, fms, alice_verifier,
+            loss_test, acc_top1, alice_1, eve_0 = val_step(CAEM_with_SNR, fms, alice_verifier,
                                             args, batch, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
                                                                                           sents, sents, sents_eve, 0.1, pad_idx, args.channel)
 
-            total_alice += loss_alice
-            total_eve += loss_eve
+            total_alice += loss_test
+            total_eve += acc_top1
             alice_acc += alice_1
             eve_acc += eve_0
             # pbar.set_description(  # 设置进度条的描述
