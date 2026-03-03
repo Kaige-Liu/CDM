@@ -548,7 +548,7 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     semantic_mac = torch.cat([enc_output, mac], dim=1)
     g = CAEM_with_SNR(enc_output, snr)  # alice得到的g
 
-    enc_output_eve = deepsc.encoder(src, src_mask, Eve_kb_final, Bob_mapping_final)  # f
+    enc_output_eve = deepsc.encoder(src_eve, src_mask_eve, Eve_kb_final, Bob_mapping_final)  # f
     enc_output_eve = enc_output_eve[:, :31, :]  # 只前31个通道
     mac_eve = eve.mac_encoder(enc_output_eve, Eve_kb_final, Bob_mapping_final)
     semantic_mac_eve = torch.cat([enc_output_eve, mac_eve], dim=1)
