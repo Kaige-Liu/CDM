@@ -59,6 +59,7 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
     score = []
     alice_list = []
     eve_list = []
+    perm_list = []
 
     deepsc.eval()
     key_ab.eval()
@@ -79,6 +80,7 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
         for epoch in range(args.epochs):
             alice_list_tmp = []
             eve_list_tmp = []
+            perm_list_tmp = []
 
             for snr in tqdm(SNR):  # 对每个信噪比 所有的数据
                 # snr就是一个数
@@ -86,6 +88,7 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
 
                 total_alice = 0
                 total_eve = 0
+                total_perm = 0
                 for sents in test_iterator:
                     sents = sents.to(device)
                     try:
@@ -93,27 +96,32 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
                     except:
                         iter_eve = iter(test_iterator_eve)
                         sents_eve = next(iter_eve).to(device)
-                    alice_1, eve_0 = greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
+                    alice_1, eve_0, perm_0 = greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
                                                                                         sents, sents_eve,
                                                                                         noise_std, args.MAX_LENGTH,
                                                                                         pad_idx,
                                                                                         start_idx, args.channel)
                     total_alice += alice_1
                     total_eve += eve_0
+                    total_perm += perm_0
 
                 average_alice = total_alice / len(test_iterator)  # 当前信噪比下的平均准确率(一个数)
                 average_eve = total_eve / len(test_iterator)
+                average_perm = total_perm / len(test_iterator)
 
                 alice_list_tmp.append(average_alice)
                 eve_list_tmp.append(average_eve)
+                perm_list_tmp.append(average_perm)
 
             alice_list.append(alice_list_tmp)
             eve_list.append(eve_list_tmp)
+            perm_list.append(perm_list_tmp)
 
     alice_score = np.mean(np.array(alice_list), axis=0)
     eve_score = np.mean(np.array(eve_list), axis=0)
+    perm_score = np.mean(np.array(perm_list), axis=0)
 
-    return alice_score, eve_score
+    return alice_score, eve_score, perm_score
 
 
 
@@ -165,7 +173,7 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/checkpoint_109.pth')
     # checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-01-29-17_55_16/checkpoint_399_0.9968_0.9851.pth')  # 12部分的那三个网络
-    checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-04-01_03_12/checkpoint_1_0.0_1.0.pth')
+    checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-04-01_51_11/checkpoint_12_0.1665_0.9798.pth_0.8343.pth')
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
@@ -209,9 +217,11 @@ if __name__ == '__main__':
     fms = fms.to(device)
     alice_verifier = alice_verifier.to(device)
 
-    alice_score, eve_score = performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
+    alice_score, eve_score, perm_score = performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
     print("alice检测准确率：")
     print(alice_score)
     print("eve检测准确率：")
     print(eve_score)
+    print("alice打乱样本检测准确率：")
+    print(perm_score)
 

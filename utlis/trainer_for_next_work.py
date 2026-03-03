@@ -187,6 +187,7 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
     trg_inp_eve = src_eve[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
     trg_real_eve = src_eve[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
 
+
     src_mask, look_ahead_mask = create_masks(src, trg_inp, pad)
     src_mask_eve, look_ahead_mask_eve = create_masks(src_eve, trg_inp_eve, pad)
 
@@ -295,92 +296,32 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
     channel_dec_g_pp = model.channel_decoder(Rx_sig_g_pp)
     channel_dec_g_eve_pp = model.channel_decoder(Rx_sig_g_eve_pp)
 
+    perm = torch.randperm(bs, device=device)
+    if perm.equal(torch.arange(bs, device=device)):
+        perm = torch.randperm(bs, device=device)
+    channel_dec_g_pp_perm = channel_dec_g_pp[perm]
 
 
+    # 然后进行判别
+    logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
+    logits_perm = alice_verifier(g, channel_dec_g_pp_perm)  # 判别打乱后的结果
 
+    label_1 = torch.ones_like(logits)
+    loss_alice = criterion_bcelogits(logits, label_1)
 
-    # # 然后进行判别
-    # logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
-    # logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
-    #
-    # label_1 = torch.ones_like(logits)
-    # loss_alice = criterion_bcelogits(logits, label_1)
-    #
-    # label_0 = torch.zeros_like(logits_eve)
-    # loss_eve = criterion_bcelogits(logits_eve, label_0)
-    #
-    # loss = loss_alice + 0.5 * loss_eve
+    label_0 = torch.zeros_like(logits_eve)
+    loss_eve = criterion_bcelogits(logits_eve, label_0)
 
-    # =========================
-    # 1) 定义正样本候选集合 ghat_pos
-    # =========================
-    # g:                 [B, C, L]   —— Alice 本地算的映射（anchor）
-    # channel_dec_g_pp:  [B, C, L]   —— Bob 回传的映射（对应配对的 ĝ）
-    g_anchor = g
-    ghat_pos = channel_dec_g_pp
+    loss_perm = criterion_bcelogits(logits_perm, label_0)
 
-    B, C, L = g_anchor.shape
-
-    # =========================
-    # 2) 计算“配对打分矩阵” scores，形状 [B, B]
-    #    scores[i, j] = verifier(g_i, ghat_j) 的 logits（越大越像“匹配”）
-    #
-    #    解释：
-    #    - 第 i 行：固定 g_i，去和所有 ghat_j 比（j=1..B）
-    #    - 正样本：对角线 scores[i, i]
-    #    - 负样本：同一行里所有 j != i 的 scores[i, j]
-    # =========================
-    scores = torch.empty((B, B), device=g_anchor.device, dtype=torch.float32)
-
-    for i in range(B):
-        # 取出第 i 个 anchor: g_i，形状 [1, C, L]
-        gi = g_anchor[i:i + 1]
-
-        # 为了让 verifier 一次算完和所有候选的分数：
-        # 把 gi 复制 B 份，变成 [B, C, L]
-        gi_rep = gi.expand(B, -1, -1)
-
-        # verifier 输出 logits: [B, 1]，对应 (g_i, ghat_1..B)
-        # squeeze 成 [B]
-        scores[i] = alice_verifier(gi_rep, ghat_pos).squeeze(1)
-
-    # （可选）温度系数：让 softmax 更“尖”或更“平”
-    # tau 小 -> 更尖锐，更强对比；tau 大 -> 更平滑
-    tau = 1.0
-    scores = scores / tau
-
-    # =========================
-    # 3) 构造标签 targets
-    #    对每一行 i，正确匹配的列就是 j=i
-    #    也就是 targets = [0,1,2,...,B-1]
-    # =========================
-    targets = torch.arange(B, device=g_anchor.device)
-
-    # =========================
-    # 4) Matching loss：CrossEntropy
-    #    这是“softmax matching”的核心：
-    #    - 让 scores[i, i] 在第 i 行里最大
-    #    - 同时把 scores[i, j!=i] 压下去（它们就是负样本）
-    # =========================
-    loss_match = F.cross_entropy(scores, targets)
-
-
-    loss = loss_match
-
+    loss = 2 * loss_alice + 0.5 * loss_eve + loss_perm
 
     opt_joint.zero_grad()
     loss.backward()
     opt_joint.step()
 
-    # =========================
-    # 7) 计算一个直观指标：Top-1 匹配准确率
-    #    对每行 i，看 argmax(scores[i]) 是否等于 i
-    # =========================
-    with torch.no_grad():
-        pred = scores.argmax(dim=1)  # [B]
-        acc_top1 = (pred == targets).float().mean().item()
-
-    return loss.item(), acc_top1
+    return loss_alice.item(), loss_eve.item(), loss_perm.item()
 
 
 def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, trg, src_eve, n_var, pad, channel):  # 参数模型，发送的128个句子，发送的128个句子，噪声标准差(数字0.1)，数字0，信道类型
@@ -500,89 +441,36 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
     channel_dec_g_pp = model.channel_decoder(Rx_sig_g_pp)
     channel_dec_g_eve_pp = model.channel_decoder(Rx_sig_g_eve_pp)
 
+    perm = torch.randperm(bs, device=device)
+    if perm.equal(torch.arange(bs, device=device)):
+        perm = torch.randperm(bs, device=device)
+    channel_dec_g_pp_perm = channel_dec_g_pp[perm]
+
+
 
     # 然后进行判别
     logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
     logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
+    logits_perm = alice_verifier(g, channel_dec_g_pp_perm)  # 判别打乱后的结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]
     alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
 
     pred_neg = (logits_eve >= 0).float()  # [bs,1]
     eve_0 = (1.0 - pred_neg).mean().item()  # 负样本正确率 = 预测为0的比例
-    #
-    #
-    # label_1 = torch.ones_like(logits)
-    # loss_alice_test = criterion_bcelogits(logits, label_1)
-    #
-    # label_0 = torch.zeros_like(logits_eve)
-    # loss_eve_test = criterion_bcelogits(logits_eve, label_0)
 
-    # =========================
-    # 1) 定义正样本候选集合 ghat_pos
-    # =========================
-    # g:                 [B, C, L]   —— Alice 本地算的映射（anchor）
-    # channel_dec_g_pp:  [B, C, L]   —— Bob 回传的映射（对应配对的 ĝ）
-    g_anchor = g
-    ghat_pos = channel_dec_g_pp
+    pred_perm = (logits_perm >= 0).float()  # [bs,1]
+    perm_0 = (1.0 - pred_perm).mean().item()  # 打乱样本正确率 = 预测为0的比例
 
-    B, C, L = g_anchor.shape
+    label_1 = torch.ones_like(logits)
+    loss_alice = criterion_bcelogits(logits, label_1)
 
-    # =========================
-    # 2) 计算“配对打分矩阵” scores，形状 [B, B]
-    #    scores[i, j] = verifier(g_i, ghat_j) 的 logits（越大越像“匹配”）
-    #
-    #    解释：
-    #    - 第 i 行：固定 g_i，去和所有 ghat_j 比（j=1..B）
-    #    - 正样本：对角线 scores[i, i]
-    #    - 负样本：同一行里所有 j != i 的 scores[i, j]
-    # =========================
-    scores = torch.empty((B, B), device=g_anchor.device, dtype=torch.float32)
+    label_0 = torch.zeros_like(logits_eve)
+    loss_eve = criterion_bcelogits(logits_eve, label_0)
 
-    for i in range(B):
-        # 取出第 i 个 anchor: g_i，形状 [1, C, L]
-        gi = g_anchor[i:i + 1]
+    loss_perm = criterion_bcelogits(logits_perm, label_0)
 
-        # 为了让 verifier 一次算完和所有候选的分数：
-        # 把 gi 复制 B 份，变成 [B, C, L]
-        gi_rep = gi.expand(B, -1, -1)
-
-        # verifier 输出 logits: [B, 1]，对应 (g_i, ghat_1..B)
-        # squeeze 成 [B]
-        scores[i] = alice_verifier(gi_rep, ghat_pos).squeeze(1)
-
-    # （可选）温度系数：让 softmax 更“尖”或更“平”
-    # tau 小 -> 更尖锐，更强对比；tau 大 -> 更平滑
-    tau = 1.0
-    scores = scores / tau
-
-    # =========================
-    # 3) 构造标签 targets
-    #    对每一行 i，正确匹配的列就是 j=i
-    #    也就是 targets = [0,1,2,...,B-1]
-    # =========================
-    targets = torch.arange(B, device=g_anchor.device)
-
-    # =========================
-    # 4) Matching loss：CrossEntropy
-    #    这是“softmax matching”的核心：
-    #    - 让 scores[i, i] 在第 i 行里最大
-    #    - 同时把 scores[i, j!=i] 压下去（它们就是负样本）
-    # =========================
-    loss_match = F.cross_entropy(scores, targets)
-
-    loss = loss_match
-
-    # =========================
-    # 7) 计算一个直观指标：Top-1 匹配准确率
-    #    对每行 i，看 argmax(scores[i]) 是否等于 i
-    # =========================
-    with torch.no_grad():
-        pred = scores.argmax(dim=1)  # [B]
-        acc_top1 = (pred == targets).float().mean().item()
-
-
-    return loss.item(), acc_top1, alice_1, eve_0  # loss，top1准确率，alice的正确率，eve的正确率
+    return loss_alice.item(), loss_eve.item(), loss_perm.item(), alice_1, eve_0, perm_0
 
 
 def mac_accuracy_all(normal, eve1, eve2): # 返回的是检测成功率
@@ -742,13 +630,15 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     channel_dec_g_pp = deepsc.channel_decoder(Rx_sig_g_pp)
     channel_dec_g_eve_pp = deepsc.channel_decoder(Rx_sig_g_eve_pp)
 
-
-
+    perm = torch.randperm(bs, device=device)
+    if perm.equal(torch.arange(bs, device=device)):
+        perm = torch.randperm(bs, device=device)
+    channel_dec_g_pp_perm = channel_dec_g_pp[perm]
 
     # 然后进行判别
     logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
     logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
-    # logits_neg = alice_verifier(g, g_neg_pp)  # 判别neg结果
+    logits_perm = alice_verifier(g, channel_dec_g_pp_perm)  # 判别打乱后的结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]
     alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
@@ -756,10 +646,10 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     pred_neg = (logits_eve >= 0).float()  # [bs,1]
     eve_0 = (1.0 - pred_neg).mean().item()  # 负样本正确率 = 预测为0的比例
 
-    # pred_neg_neg = (logits_neg >= 0).float()  # [bs,1]
-    # neg_0 = (1.0 - pred_neg_neg).mean().item()  # 负样本正确率 = 预测为0的比例
+    pred_perm = (logits_perm >= 0).float()  # [bs,1]
+    perm_0 = (1.0 - pred_perm).mean().item()  # 打乱样本正确率 = 预测为0的比例
 
-    return alice_1, eve_0
+    return alice_1, eve_0, perm_0
 
 def train_mi(model, mi_net, src, n_var, padding_idx, opt, channel):
     mi_net.train()
