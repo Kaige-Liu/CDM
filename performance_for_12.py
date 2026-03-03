@@ -159,9 +159,9 @@ if __name__ == '__main__':
     Bob_mapping = KB_Mapping().to(device)
     Eve_mapping = KB_Mapping().to(device)
 
-    CAEM_with_SNR = CAEM_Fig2_SNR_1D(C_in=31, C_out=16, use_resnet=True).to(device)  # 加入SNR考量的映射 alice和bob共享
-    fms = FeatureMapSelectionModule_SNR_AllC(C=16, hidden=64).to(device)  # 对上面的映射进行特征选择 只有bob用 16就是上面的输出通道数 注意这里筛选完也是16通道 只不过有的被置零了
-    alice_verifier = VerificationDiscriminatorLN(C=16, L=128, output_logits=True).to(device)  # alice的验证器 128是特征长度
+    CAEM_with_SNR = CAEM_Fig2_SNR_1D(C_in=31, C_out=8, use_resnet=True).to(device)  # 加入SNR考量的映射 alice和bob共享
+    fms = FeatureMapSelectionModule_SNR_AllC(C=8, hidden=64).to(device)  # 对上面的映射进行特征选择 只有bob用 16就是上面的输出通道数 注意这里筛选完也是16通道 只不过有的被置零了
+    alice_verifier = VerificationDiscriminatorLN(C=8, L=128, output_logits=True).to(device)  # alice的验证器 128是特征长度
 
     checkpoint = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/checkpoint_109.pth')
     # checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-01-29-17_55_16/checkpoint_399_0.9968_0.9851.pth')  # 12部分的那三个网络

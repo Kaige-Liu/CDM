@@ -247,9 +247,9 @@ if __name__ == '__main__':
     Bob_mapping = KB_Mapping().to(device)
     Eve_mapping = KB_Mapping().to(device)
 
-    CAEM_with_SNR = CAEM_Fig2_SNR_1D(C_in=31, C_out=16, use_resnet=True).to(device)  # 加入SNR考量的映射 alice和bob共享
-    fms = FeatureMapSelectionModule_SNR_AllC(C=16, hidden=64).to(device)  # 对上面的映射进行特征选择 只有bob用 16就是上面的输出通道数 注意这里筛选完也是16通道 只不过有的被置零了
-    alice_verifier = VerificationDiscriminatorLN(C=16, L=128, output_logits=True).to(device)  # alice的验证器 128是特征长度
+    CAEM_with_SNR = CAEM_Fig2_SNR_1D(C_in=31, C_out=8, use_resnet=True).to(device)  # 加入SNR考量的映射 alice和bob共享
+    fms = FeatureMapSelectionModule_SNR_AllC(C=8, hidden=64).to(device)  # 对上面的映射进行特征选择 只有bob用 16就是上面的输出通道数 注意这里筛选完也是16通道 只不过有的被置零了
+    alice_verifier = VerificationDiscriminatorLN(C=8, L=128, output_logits=True).to(device)  # alice的验证器 128是特征长度
 
     initNetParams(CAEM_with_SNR)
     initNetParams(fms)
