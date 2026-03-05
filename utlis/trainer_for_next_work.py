@@ -194,11 +194,13 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
 
     channels = Channels()
     bs = args.batch_size
-    snr_min, snr_max = -10.0, 20.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    snr_min, snr_max = 3, 10  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
     snr = snr_db.expand(bs).float()  # 输入到snr网络中的snr 单位是db
+
+    batch_mod = batch % 4
 
     key = generate_key(args, src.shape)
 
@@ -249,26 +251,38 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
     mac_eve = eve.mac_encoder(enc_output_eve, Eve_kb_final, Bob_mapping_final)
     semantic_mac_eve = torch.cat([enc_output_eve, mac_eve], dim=1)
 
+    enc_output_m = model.encoder(src, src_mask, Eve_kb_final, Bob_mapping_final)  # f
+    enc_output_m = enc_output_m[:, :31, :]  # 只前31个通道
+    mac_m = eve.mac_encoder(enc_output_m, Eve_kb_final, Bob_mapping_final)
+    semantic_mac_m = torch.cat([enc_output_m, mac_m], dim=1)
+
     channel_enc_output = model.channel_encoder(semantic_mac)
     channel_enc_output_eve = model.channel_encoder(semantic_mac_eve)
+    channel_enc_output_m = model.channel_encoder(semantic_mac_m)
     Tx_sig = PowerNormalize(channel_enc_output)
     Tx_sig_eve = PowerNormalize(channel_enc_output_eve)
+    Tx_sig_m = PowerNormalize(channel_enc_output_m)
 
     if channel == 'AWGN':
         Rx_sig = channels.AWGN(Tx_sig, noise_std)
         Rx_sig_eve = channels.AWGN(Tx_sig_eve, noise_std)
+        Rx_sig_m = channels.AWGN(Tx_sig_m, noise_std)
     elif channel == 'Rayleigh':
         Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
         Rx_sig_eve = channels.Rayleigh(Tx_sig_eve, noise_std)
+        Rx_sig_m = channels.Rayleigh(Tx_sig_m, noise_std)
     elif channel == 'Rician':
         Rx_sig = channels.Rician(Tx_sig, noise_std)
         Rx_sig_eve = channels.Rician(Tx_sig_eve, noise_std)
+        Rx_sig_m = channels.Rician(Tx_sig_m, noise_std)
     else:
         raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
     channel_dec_output = model.channel_decoder(Rx_sig)
     channel_dec_output_eve = model.channel_decoder(Rx_sig_eve)
+    channel_dec_output_m = model.channel_decoder(Rx_sig_m)
     f_p = channel_dec_output[:, :31, :]  # 前31个通道 发送的时候也是
     f_eve_p = channel_dec_output_eve[:, :31, :]  # 前31个通道 发送的时候也是
+    f_m_p = channel_dec_output_m[:, :31, :]  # 前31个通道 发送的时候也是
 
     # 下面就是那个映射
     g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
@@ -277,51 +291,127 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
     g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
     g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
+    g_m_p = CAEM_with_SNR(f_m_p, snr)
+    g_m_pp, Mk_m, ent_m, probs_m, onehot_m = fms(g_m_p, snr, tau=0.7, hard=True)
+
     # 我这里让g_pp和g_eve_pp过一遍信道试试
     channel_enc_g_pp = model.channel_encoder(g_pp)
     channel_enc_g_eve_pp = model.channel_encoder(g_eve_pp)
+    channel_enc_g_m_pp = model.channel_encoder(g_m_pp)
     Tx_sig_g_pp = PowerNormalize(channel_enc_g_pp)
     Tx_sig_g_eve_pp = PowerNormalize(channel_enc_g_eve_pp)
+    Tx_sig_g_m_pp = PowerNormalize(channel_enc_g_m_pp)
+
     if channel == 'AWGN':
         Rx_sig_g_pp = channels.AWGN(Tx_sig_g_pp, noise_std)
         Rx_sig_g_eve_pp = channels.AWGN(Tx_sig_g_eve_pp, noise_std)
+        Rx_sig_g_m_pp = channels.AWGN(Tx_sig_g_m_pp, noise_std)
     elif channel == 'Rayleigh':
         Rx_sig_g_pp = channels.Rayleigh(Tx_sig_g_pp, noise_std)
         Rx_sig_g_eve_pp = channels.Rayleigh(Tx_sig_g_eve_pp, noise_std)
+        Rx_sig_g_m_pp = channels.Rayleigh(Tx_sig_g_m_pp, noise_std)
     elif channel == 'Rician':
         Rx_sig_g_pp = channels.Rician(Tx_sig_g_pp, noise_std)
         Rx_sig_g_eve_pp = channels.Rician(Tx_sig_g_eve_pp, noise_std)
+        Rx_sig_g_m_pp = channels.Rician(Tx_sig_g_m_pp, noise_std)
     else:
         raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
     channel_dec_g_pp = model.channel_decoder(Rx_sig_g_pp)
     channel_dec_g_eve_pp = model.channel_decoder(Rx_sig_g_eve_pp)
-
-    perm = torch.randperm(bs, device=device)
-    if perm.equal(torch.arange(bs, device=device)):
-        perm = torch.randperm(bs, device=device)
-    channel_dec_g_pp_perm = channel_dec_g_pp[perm]
+    channel_dec_g_m_pp = model.channel_decoder(Rx_sig_g_m_pp)
 
 
     # 然后进行判别
     logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
     logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
-    logits_perm = alice_verifier(g, channel_dec_g_pp_perm)  # 判别打乱后的结果
+    logits_m = alice_verifier(g, channel_dec_g_m_pp)  # 判别打乱后的结果
 
     label_1 = torch.ones_like(logits)
-    loss_alice = criterion_bcelogits(logits, label_1)
+    loss_alice_1 = criterion_bcelogits(logits, label_1)
 
     label_0 = torch.zeros_like(logits_eve)
-    loss_eve = criterion_bcelogits(logits_eve, label_0)
+    loss_eve_0 = criterion_bcelogits(logits_eve, label_0)
+    loss_eve_1 = criterion_bcelogits(logits_eve, label_1)
 
-    loss_perm = criterion_bcelogits(logits_perm, label_0)
+    loss_m_0 = criterion_bcelogits(logits_m, label_0)
+    loss_m_1 = criterion_bcelogits(logits_m, label_1)
 
-    loss = 1.5 * loss_alice + 0.5 * loss_eve + 2 * loss_perm
+    if batch_mod == 0:
+        freeze_net(key_ab, False)
+        freeze_net(alice_bob_mac, False)
+        freeze_net(eve, False)
+        freeze_net(Alice_KB, False)
+        freeze_net(Bob_KB, False)
+        freeze_net(Eve_KB, False)
+        freeze_net(Alice_mapping, False)
+        freeze_net(Bob_mapping, False)
+        freeze_net(Eve_mapping, False)
+        freeze_net(model, False)
+        freeze_net(CAEM_with_SNR, True)
+        freeze_net(fms, True)
+        freeze_net(alice_verifier, True)
+        loss = loss_eve_0 + loss_alice_1
+        opt_joint.zero_grad()
+        loss.backward()
+        opt_joint.step()
 
-    opt_joint.zero_grad()
-    loss.backward()
-    opt_joint.step()
+    elif batch_mod == 1:
+        freeze_net(key_ab, False)
+        freeze_net(alice_bob_mac, False)
+        freeze_net(eve, False)
+        freeze_net(Alice_KB, False)
+        freeze_net(Bob_KB, False)
+        freeze_net(Eve_KB, False)
+        freeze_net(Alice_mapping, False)
+        freeze_net(Bob_mapping, False)
+        freeze_net(Eve_mapping, False)
+        freeze_net(model, False)
+        freeze_net(CAEM_with_SNR, True)
+        freeze_net(fms, True)
+        freeze_net(alice_verifier, True)
+        loss = loss_m_0 + loss_alice_1
+        opt_joint.zero_grad()
+        loss.backward()
+        opt_joint.step()
 
-    return loss_alice.item(), loss_eve.item(), loss_perm.item()
+    elif batch_mod == 2:
+        freeze_net(key_ab, False)
+        freeze_net(alice_bob_mac, False)
+        freeze_net(eve, False)
+        freeze_net(Alice_KB, False)
+        freeze_net(Bob_KB, False)
+        freeze_net(Eve_KB, True)
+        freeze_net(Alice_mapping, False)
+        freeze_net(Bob_mapping, False)
+        freeze_net(Eve_mapping, False)
+        freeze_net(model, False)
+        freeze_net(CAEM_with_SNR, False)
+        freeze_net(fms, False)
+        freeze_net(alice_verifier, False)
+        loss = loss_eve_1
+        opt_joint.zero_grad()
+        loss.backward()
+        opt_joint.step()
+    else:
+        freeze_net(key_ab, False)
+        freeze_net(alice_bob_mac, False)
+        freeze_net(eve, False)
+        freeze_net(Alice_KB, False)
+        freeze_net(Bob_KB, False)
+        freeze_net(Eve_KB, True)
+        freeze_net(Alice_mapping, False)
+        freeze_net(Bob_mapping, False)
+        freeze_net(Eve_mapping, False)
+        freeze_net(model, False)
+        freeze_net(CAEM_with_SNR, False)
+        freeze_net(fms, False)
+        freeze_net(alice_verifier, False)
+        loss = loss_m_1
+        opt_joint.zero_grad()
+        loss.backward()
+        opt_joint.step()
+
+    return loss_alice_1.item(), loss_eve_0.item(), loss_m_0.item()
 
 
 def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, trg, src_eve, n_var, pad, channel):  # 参数模型，发送的128个句子，发送的128个句子，噪声标准差(数字0.1)，数字0，信道类型
@@ -335,7 +425,7 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
 
     channels = Channels()
     bs = src.size(0)
-    snr_min, snr_max = -10.0, 20.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    snr_min, snr_max = 3, 10  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
@@ -394,26 +484,38 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
     mac_eve = eve.mac_encoder(enc_output_eve, Eve_kb_final, Bob_mapping_final)
     semantic_mac_eve = torch.cat([enc_output_eve, mac_eve], dim=1)
 
+    enc_output_m = model.encoder(src, src_mask, Eve_kb_final, Bob_mapping_final)  # f
+    enc_output_m = enc_output_m[:, :31, :]  # 只前31个通道
+    mac_m = eve.mac_encoder(enc_output_m, Eve_kb_final, Bob_mapping_final)
+    semantic_mac_m = torch.cat([enc_output_m, mac_m], dim=1)
+
     channel_enc_output = model.channel_encoder(semantic_mac)
     channel_enc_output_eve = model.channel_encoder(semantic_mac_eve)
+    channel_enc_output_m = model.channel_encoder(semantic_mac_m)
     Tx_sig = PowerNormalize(channel_enc_output)
     Tx_sig_eve = PowerNormalize(channel_enc_output_eve)
+    Tx_sig_m = PowerNormalize(channel_enc_output_m)
 
     if channel == 'AWGN':
         Rx_sig = channels.AWGN(Tx_sig, noise_std)
         Rx_sig_eve = channels.AWGN(Tx_sig_eve, noise_std)
+        Rx_sig_m = channels.AWGN(Tx_sig_m, noise_std)
     elif channel == 'Rayleigh':
         Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
         Rx_sig_eve = channels.Rayleigh(Tx_sig_eve, noise_std)
+        Rx_sig_m = channels.Rayleigh(Tx_sig_m, noise_std)
     elif channel == 'Rician':
         Rx_sig = channels.Rician(Tx_sig, noise_std)
         Rx_sig_eve = channels.Rician(Tx_sig_eve, noise_std)
+        Rx_sig_m = channels.Rician(Tx_sig_m, noise_std)
     else:
         raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
     channel_dec_output = model.channel_decoder(Rx_sig)
     channel_dec_output_eve = model.channel_decoder(Rx_sig_eve)
+    channel_dec_output_m = model.channel_decoder(Rx_sig_m)
     f_p = channel_dec_output[:, :31, :]  # 前31个通道 发送的时候也是
     f_eve_p = channel_dec_output_eve[:, :31, :]  # 前31个通道 发送的时候也是
+    f_m_p = channel_dec_output_m[:, :31, :]  # 前31个通道 发送的时候也是
 
     # 下面就是那个映射
     g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
@@ -422,36 +524,38 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
     g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # eve得到的g'
     g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
+    g_m_p = CAEM_with_SNR(f_m_p, snr)
+    g_m_pp, Mk_m, ent_m, probs_m, onehot_m = fms(g_m_p, snr, tau=0.7, hard=True)
+
     # 我这里让g_pp和g_eve_pp过一遍信道试试
     channel_enc_g_pp = model.channel_encoder(g_pp)
     channel_enc_g_eve_pp = model.channel_encoder(g_eve_pp)
+    channel_enc_g_m_pp = model.channel_encoder(g_m_pp)
     Tx_sig_g_pp = PowerNormalize(channel_enc_g_pp)
     Tx_sig_g_eve_pp = PowerNormalize(channel_enc_g_eve_pp)
+    Tx_sig_g_m_pp = PowerNormalize(channel_enc_g_m_pp)
     if channel == 'AWGN':
         Rx_sig_g_pp = channels.AWGN(Tx_sig_g_pp, noise_std)
         Rx_sig_g_eve_pp = channels.AWGN(Tx_sig_g_eve_pp, noise_std)
+        Rx_sig_g_m_pp = channels.AWGN(Tx_sig_g_m_pp, noise_std)
     elif channel == 'Rayleigh':
         Rx_sig_g_pp = channels.Rayleigh(Tx_sig_g_pp, noise_std)
         Rx_sig_g_eve_pp = channels.Rayleigh(Tx_sig_g_eve_pp, noise_std)
+        Rx_sig_g_m_pp = channels.Rayleigh(Tx_sig_g_m_pp, noise_std)
     elif channel == 'Rician':
         Rx_sig_g_pp = channels.Rician(Tx_sig_g_pp, noise_std)
         Rx_sig_g_eve_pp = channels.Rician(Tx_sig_g_eve_pp, noise_std)
+        Rx_sig_g_m_pp = channels.Rician(Tx_sig_g_m_pp, noise_std)
     else:
         raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
     channel_dec_g_pp = model.channel_decoder(Rx_sig_g_pp)
     channel_dec_g_eve_pp = model.channel_decoder(Rx_sig_g_eve_pp)
-
-    perm = torch.randperm(bs, device=device)
-    if perm.equal(torch.arange(bs, device=device)):
-        perm = torch.randperm(bs, device=device)
-    channel_dec_g_pp_perm = channel_dec_g_pp[perm]
-
-
+    channel_dec_g_m_pp = model.channel_decoder(Rx_sig_g_m_pp)
 
     # 然后进行判别
     logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
     logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
-    logits_perm = alice_verifier(g, channel_dec_g_pp_perm)  # 判别打乱后的结果
+    logits_m = alice_verifier(g, channel_dec_g_m_pp)  # 判别打乱后的结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]
     alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
@@ -459,8 +563,8 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
     pred_neg = (logits_eve >= 0).float()  # [bs,1]
     eve_0 = (1.0 - pred_neg).mean().item()  # 负样本正确率 = 预测为0的比例
 
-    pred_perm = (logits_perm >= 0).float()  # [bs,1]
-    perm_0 = (1.0 - pred_perm).mean().item()  # 打乱样本正确率 = 预测为0的比例
+    pred_m = (logits_m >= 0).float()  # [bs,1]
+    m_0 = (1.0 - pred_m).mean().item()  # 打乱样本正确率 = 预测为0的比例
 
     label_1 = torch.ones_like(logits)
     loss_alice = criterion_bcelogits(logits, label_1)
@@ -468,9 +572,9 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
     label_0 = torch.zeros_like(logits_eve)
     loss_eve = criterion_bcelogits(logits_eve, label_0)
 
-    loss_perm = criterion_bcelogits(logits_perm, label_0)
+    loss_m = criterion_bcelogits(logits_m, label_0)
 
-    return loss_alice.item(), loss_eve.item(), loss_perm.item(), alice_1, eve_0, perm_0
+    return loss_alice.item(), loss_eve.item(), loss_m.item(), alice_1, eve_0, m_0
 
 
 def mac_accuracy_all(normal, eve1, eve2): # 返回的是检测成功率
@@ -570,36 +674,38 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     mac_eve = eve.mac_encoder(enc_output_eve, Eve_kb_final, Bob_mapping_final)
     semantic_mac_eve = torch.cat([enc_output_eve, mac_eve], dim=1)
 
-    # enc_output_neg = deepsc.encoder(src_neg, src_mask_neg, Alice_kb_final, Bob_mapping_final)
-    # enc_output_neg = enc_output_neg[:, :31, :]  # 只前31个通道
-    # mac_neg = alice_bob_mac.mac_encoder(key_ebd, enc_output_neg, Alice_kb_final, Bob_mapping_final)
-    # semantic_mac_neg = torch.cat([enc_output_neg, mac_neg], dim=1)
+    enc_output_m = deepsc.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)
+    enc_output_m = enc_output_m[:, :31, :]  # 只前31个通道
+    mac_m = alice_bob_mac.mac_encoder(key_ebd, enc_output_m, Alice_kb_final, Bob_mapping_final)
+    semantic_mac_m = torch.cat([enc_output_m, mac_m], dim=1)
 
     channel_enc_output = deepsc.channel_encoder(semantic_mac)
     channel_enc_output_eve = deepsc.channel_encoder(semantic_mac_eve)
-    # channel_enc_output_neg = deepsc.channel_encoder(semantic_mac_neg)
+    channel_enc_output_m = deepsc.channel_encoder(semantic_mac_m)
     Tx_sig = PowerNormalize(channel_enc_output)
     Tx_sig_eve = PowerNormalize(channel_enc_output_eve)
-    # Tx_sig_neg = PowerNormalize(channel_enc_output_neg)
+    Tx_sig_m = PowerNormalize(channel_enc_output_m)
 
     if channel == 'AWGN':
         Rx_sig = channels.AWGN(Tx_sig, noise_std)
         Rx_sig_eve = channels.AWGN(Tx_sig_eve, noise_std)
+        Rx_sig_m = channels.AWGN(Tx_sig_m, noise_std)
     elif channel == 'Rayleigh':
         Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
         Rx_sig_eve = channels.Rayleigh(Tx_sig_eve, noise_std)
-        # Rx_sig_neg = channels.Rayleigh(Tx_sig_neg, noise_std)
+        Rx_sig_m = channels.Rayleigh(Tx_sig_m, noise_std)
     elif channel == 'Rician':
         Rx_sig = channels.Rician(Tx_sig, noise_std)
         Rx_sig_eve = channels.Rician(Tx_sig_eve, noise_std)
+        Rx_sig_m = channels.Rician(Tx_sig_m, noise_std)
     else:
         raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
     channel_dec_output = deepsc.channel_decoder(Rx_sig)
     channel_dec_output_eve = deepsc.channel_decoder(Rx_sig_eve)
-    # channel_dec_output_neg = deepsc.channel_decoder(Rx_sig_neg)
+    channel_dec_output_m = deepsc.channel_decoder(Rx_sig_m)
     f_p = channel_dec_output[:, :31, :]  # 前31个通道 发送的时候也是
     f_eve_p = channel_dec_output_eve[:, :31, :]  # 前31个通道 发送的时候也是
-    # f_neg_p = channel_dec_output_neg[:, :31, :]  # 前31个通道 发送的时候也是
+    f_m_p = channel_dec_output_m[:, :31, :]  # 前31个通道 发送的时候也是
 
     # 下面就是那个映射
     g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
@@ -608,37 +714,38 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # bob得到的g'
     g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
 
-    # g_neg_p = CAEM_with_SNR(f_neg_p, snr)  # bob得到的g'
-    # g_neg_pp, Mk_neg, ent_neg, probs_neg, onehot_neg = fms(g_neg_p, snr, tau=0.7, hard=True)  # 经过筛选的g_neg'
+    g_m_p = CAEM_with_SNR(f_m_p, snr)  # bob得到的g'
+    g_m_pp, Mk_neg, ent_neg, probs_neg, onehot_neg = fms(g_m_p, snr, tau=0.7, hard=True)  # 经过筛选的g_neg'
 
     # 我这里让g_pp和g_eve_pp过一遍信道试试
     channel_enc_g_pp = deepsc.channel_encoder(g_pp)
     channel_enc_g_eve_pp = deepsc.channel_encoder(g_eve_pp)
+    channel_enc_g_m_pp = deepsc.channel_encoder(g_m_pp)
     Tx_sig_g_pp = PowerNormalize(channel_enc_g_pp)
     Tx_sig_g_eve_pp = PowerNormalize(channel_enc_g_eve_pp)
+    Tx_sig_g_m_pp = PowerNormalize(channel_enc_g_m_pp)
     if channel == 'AWGN':
         Rx_sig_g_pp = channels.AWGN(Tx_sig_g_pp, noise_std)
         Rx_sig_g_eve_pp = channels.AWGN(Tx_sig_g_eve_pp, noise_std)
+        Rx_sig_g_m_pp = channels.AWGN(Tx_sig_g_m_pp, noise_std)
     elif channel == 'Rayleigh':
         Rx_sig_g_pp = channels.Rayleigh(Tx_sig_g_pp, noise_std)
         Rx_sig_g_eve_pp = channels.Rayleigh(Tx_sig_g_eve_pp, noise_std)
+        Rx_sig_g_m_pp = channels.Rayleigh(Tx_sig_g_m_pp, noise_std)
     elif channel == 'Rician':
         Rx_sig_g_pp = channels.Rician(Tx_sig_g_pp, noise_std)
         Rx_sig_g_eve_pp = channels.Rician(Tx_sig_g_eve_pp, noise_std)
+        Rx_sig_g_m_pp = channels.Rician(Tx_sig_g_m_pp, noise_std)
     else:
         raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
     channel_dec_g_pp = deepsc.channel_decoder(Rx_sig_g_pp)
     channel_dec_g_eve_pp = deepsc.channel_decoder(Rx_sig_g_eve_pp)
-
-    perm = torch.randperm(bs, device=device)
-    if perm.equal(torch.arange(bs, device=device)):
-        perm = torch.randperm(bs, device=device)
-    channel_dec_g_pp_perm = channel_dec_g_pp[perm]
+    channel_dec_g_m_pp = deepsc.channel_decoder(Rx_sig_g_m_pp)
 
     # 然后进行判别
     logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
     logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
-    logits_perm = alice_verifier(g, channel_dec_g_pp_perm)  # 判别打乱后的结果
+    logits_m = alice_verifier(g, channel_dec_g_m_pp)  # 判别打乱后的结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]
     alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
@@ -646,10 +753,10 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     pred_neg = (logits_eve >= 0).float()  # [bs,1]
     eve_0 = (1.0 - pred_neg).mean().item()  # 负样本正确率 = 预测为0的比例
 
-    pred_perm = (logits_perm >= 0).float()  # [bs,1]
-    perm_0 = (1.0 - pred_perm).mean().item()  # 打乱样本正确率 = 预测为0的比例
+    pred_m = (logits_m >= 0).float()  # [bs,1]
+    m_0 = (1.0 - pred_m).mean().item()  # 打乱样本正确率 = 预测为0的比例
 
-    return alice_1, eve_0, perm_0
+    return alice_1, eve_0, m_0
 
 
 def greedy_decode_for_draw(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, src_eve, noise_std, max_len, pad, start_symbol, channel):
