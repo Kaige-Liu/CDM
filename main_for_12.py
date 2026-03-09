@@ -410,7 +410,7 @@ if __name__ == '__main__':
         list(alice_verifier.parameters())+
         list(Eve_KB.parameters())+
         list(eve.parameters()),
-        lr=1e-4, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
+        lr=5e-5, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
     # 模型的设置可能有点问题
     # 只优化deepsc的优化器
     # optimizer_joint = torch.optim.Adam(deepsc.parameters(),
@@ -435,7 +435,7 @@ if __name__ == '__main__':
                 "Eve_KB": Eve_KB.state_dict(),
                 "eve": eve.state_dict()
             }
-            torch.save(checkpoint, './checkpoints/12/' + now + '/checkpoint_{}'.format(str(epoch).zfill(3)) + '_{}'.format(str(alice_1)[:6]) + '_{}_'.format(str(eve_0)[:6]) + '_{}.pth'.format(str(m_0)[:6]))  # 保存模型，文件名包含epoch和alice_1的准确率 eve_0的准确率 eve发alice消息的准确率
+            torch.save(checkpoint, './checkpoints/12/' + now + '/checkpoint_{}'.format(str(epoch).zfill(3)) + '_{}'.format(str(alice_1)[1:7]) + '_{}_'.format(str(eve_0)[1:7]) + '_{}.pth'.format(str(m_0)[1:7]))  # 保存模型，文件名包含epoch和alice_1的准确率 eve_0的准确率 eve发alice消息的准确率
             record_loss = loss_alice_test  # 更新最小的准确率
 
         writer.add_scalar('Loss_alice', loss_alice, epoch)
@@ -449,4 +449,5 @@ if __name__ == '__main__':
         writer.add_scalar('Alice_Acc', alice_1, epoch)
         writer.add_scalar('Eve_Acc', eve_0, epoch)
         writer.add_scalar('m_Acc', m_0, epoch)
+        writer.add_scalar('All_Acc', acc, epoch)
 

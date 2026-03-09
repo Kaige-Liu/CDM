@@ -336,7 +336,7 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
     loss_m_0 = criterion_bcelogits(logits_m, label_0)
     loss_m_1 = criterion_bcelogits(logits_m, label_1)
 
-    if batch_mod == 0:
+    if batch_mod == 0 or batch_mod == 1 or batch_mod == 3:
         freeze_net(key_ab, False)
         freeze_net(alice_bob_mac, False)
         freeze_net(eve, False)
@@ -355,24 +355,24 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
         loss.backward()
         opt_joint.step()
 
-    elif batch_mod == 1:
-        freeze_net(key_ab, False)
-        freeze_net(alice_bob_mac, False)
-        freeze_net(eve, False)
-        freeze_net(Alice_KB, False)
-        freeze_net(Bob_KB, False)
-        freeze_net(Eve_KB, False)
-        freeze_net(Alice_mapping, False)
-        freeze_net(Bob_mapping, False)
-        freeze_net(Eve_mapping, False)
-        freeze_net(model, False)
-        freeze_net(CAEM_with_SNR, True)
-        freeze_net(fms, True)
-        freeze_net(alice_verifier, True)
-        loss = loss_m_0 + loss_alice_1
-        opt_joint.zero_grad()
-        loss.backward()
-        opt_joint.step()
+    # elif batch_mod == 1:
+    #     freeze_net(key_ab, False)
+    #     freeze_net(alice_bob_mac, False)
+    #     freeze_net(eve, False)
+    #     freeze_net(Alice_KB, False)
+    #     freeze_net(Bob_KB, False)
+    #     freeze_net(Eve_KB, False)
+    #     freeze_net(Alice_mapping, False)
+    #     freeze_net(Bob_mapping, False)
+    #     freeze_net(Eve_mapping, False)
+    #     freeze_net(model, False)
+    #     freeze_net(CAEM_with_SNR, True)
+    #     freeze_net(fms, True)
+    #     freeze_net(alice_verifier, True)
+    #     loss = loss_m_0 + loss_alice_1
+    #     opt_joint.zero_grad()
+    #     loss.backward()
+    #     opt_joint.step()
 
     elif batch_mod == 2:
         freeze_net(key_ab, False)
@@ -392,24 +392,24 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
         opt_joint.zero_grad()
         loss.backward()
         opt_joint.step()
-    else:
-        freeze_net(key_ab, False)
-        freeze_net(alice_bob_mac, False)
-        freeze_net(eve, True)
-        freeze_net(Alice_KB, False)
-        freeze_net(Bob_KB, False)
-        freeze_net(Eve_KB, True)
-        freeze_net(Alice_mapping, False)
-        freeze_net(Bob_mapping, False)
-        freeze_net(Eve_mapping, False)
-        freeze_net(model, False)
-        freeze_net(CAEM_with_SNR, False)
-        freeze_net(fms, False)
-        freeze_net(alice_verifier, False)
-        loss = loss_m_1
-        opt_joint.zero_grad()
-        loss.backward()
-        opt_joint.step()
+    # else:
+    #     freeze_net(key_ab, False)
+    #     freeze_net(alice_bob_mac, False)
+    #     freeze_net(eve, True)
+    #     freeze_net(Alice_KB, False)
+    #     freeze_net(Bob_KB, False)
+    #     freeze_net(Eve_KB, True)
+    #     freeze_net(Alice_mapping, False)
+    #     freeze_net(Bob_mapping, False)
+    #     freeze_net(Eve_mapping, False)
+    #     freeze_net(model, False)
+    #     freeze_net(CAEM_with_SNR, False)
+    #     freeze_net(fms, False)
+    #     freeze_net(alice_verifier, False)
+    #     loss = loss_m_1
+    #     opt_joint.zero_grad()
+    #     loss.backward()
+    #     opt_joint.step()
 
     return loss_alice_1.item(), loss_eve_0.item(), loss_m_0.item()
 
