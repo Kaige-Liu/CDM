@@ -338,9 +338,9 @@ if __name__ == '__main__':
                 "CAEM_with_SNR": CAEM_with_SNR.state_dict(),
                 "fms": fms.state_dict(),
                 "alice_verifier": alice_verifier.state_dict(),
-                "eve": eve.state_dict(),
+                "Eve_KB": Eve_KB.state_dict(),
             }
-            torch.save(checkpoint, './checkpoints/12/' + now + '/checkpoint_{}'.format(epoch) + '_{}'.format(str(alice_1)[:6]) + '_{}_'.format(str(eve_0)[:6]) + '_{}.pth'.format(str(m_0)[:6]))  # 保存模型，文件名包含epoch和alice_1的准确率 eve_0的准确率 perm_0的准确率
+            torch.save(checkpoint, './checkpoints/12/' + now + '/checkpoint_{}'.format(str(epoch).zfill(3)) + '_{}'.format(str(alice_1)[:6]) + '_{}_'.format(str(eve_0)[:6]) + '_{}.pth'.format(str(m_0)[:6]))  # 保存模型，文件名包含epoch和alice_1的准确率 eve_0的准确率 perm_0的准确率
             record_loss = loss_alice_test  # 更新最小的准确率
 
         writer.add_scalar('Loss_alice', loss_alice, epoch)

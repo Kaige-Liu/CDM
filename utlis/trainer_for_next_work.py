@@ -608,13 +608,6 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     src_mask, look_ahead_mask = create_masks(src, trg_inp, pad)
     src_mask_eve, look_ahead_mask_eve = create_masks(src_eve, trg_inp_eve, pad)
 
-    perm = torch.randperm(bs, device=src.device)
-    src_neg = src[perm]
-    trg_inp_neg = src_neg[:, :-1]
-    trg_real_neg = src_neg[:, 1:]
-    src_mask_neg, look_ahead_mask_neg = create_masks(src_neg, trg_inp_neg, pad)
-
-
     channels = Channels()
     bs = src.size(0)
     snr_lin = 1.0 / (noise_std ** 2)
@@ -674,9 +667,9 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     mac_eve = eve.mac_encoder(enc_output_eve, Eve_kb_final, Bob_mapping_final)
     semantic_mac_eve = torch.cat([enc_output_eve, mac_eve], dim=1)
 
-    enc_output_m = deepsc.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)
+    enc_output_m = deepsc.encoder(src, src_mask, Eve_kb_final, Bob_mapping_final)
     enc_output_m = enc_output_m[:, :31, :]  # 只前31个通道
-    mac_m = alice_bob_mac.mac_encoder(key_ebd, enc_output_m, Alice_kb_final, Bob_mapping_final)
+    mac_m = eve.mac_encoder(enc_output_m, Eve_kb_final, Bob_mapping_final)
     semantic_mac_m = torch.cat([enc_output_m, mac_m], dim=1)
 
     channel_enc_output = deepsc.channel_encoder(semantic_mac)
