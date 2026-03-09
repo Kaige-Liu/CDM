@@ -194,7 +194,7 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
 
     channels = Channels()
     bs = args.batch_size
-    snr_min, snr_max = 3, 10  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    snr_min, snr_max = 0, 5  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
@@ -377,7 +377,7 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
     elif batch_mod == 2:
         freeze_net(key_ab, False)
         freeze_net(alice_bob_mac, False)
-        freeze_net(eve, False)
+        freeze_net(eve, True)
         freeze_net(Alice_KB, False)
         freeze_net(Bob_KB, False)
         freeze_net(Eve_KB, True)
@@ -395,7 +395,7 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
     else:
         freeze_net(key_ab, False)
         freeze_net(alice_bob_mac, False)
-        freeze_net(eve, False)
+        freeze_net(eve, True)
         freeze_net(Alice_KB, False)
         freeze_net(Bob_KB, False)
         freeze_net(Eve_KB, True)
@@ -425,7 +425,7 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
 
     channels = Channels()
     bs = src.size(0)
-    snr_min, snr_max = 3, 10  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    snr_min, snr_max = 0, 5  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
@@ -574,7 +574,9 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
 
     loss_m = criterion_bcelogits(logits_m, label_0)
 
-    return loss_alice.item(), loss_eve.item(), loss_m.item(), alice_1, eve_0, m_0
+    acc = (alice_1 + eve_0 + m_0) / 3.0
+
+    return loss_alice.item(), loss_eve.item(), loss_m.item(), alice_1, eve_0, m_0, acc
 
 
 def mac_accuracy_all(normal, eve1, eve2): # 返回的是检测成功率
@@ -679,6 +681,7 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     Tx_sig_eve = PowerNormalize(channel_enc_output_eve)
     Tx_sig_m = PowerNormalize(channel_enc_output_m)
 
+    channel = 'AWGN'
     if channel == 'AWGN':
         Rx_sig = channels.AWGN(Tx_sig, noise_std)
         Rx_sig_eve = channels.AWGN(Tx_sig_eve, noise_std)
@@ -749,7 +752,9 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     pred_m = (logits_m >= 0).float()  # [bs,1]
     m_0 = (1.0 - pred_m).mean().item()  # 打乱样本正确率 = 预测为0的比例
 
-    return alice_1, eve_0, m_0
+    acc = (alice_1 + eve_0 + m_0) / 3
+
+    return alice_1, eve_0, m_0, acc
 
 
 def greedy_decode_for_draw(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, src_eve, noise_std, max_len, pad, start_symbol, channel):

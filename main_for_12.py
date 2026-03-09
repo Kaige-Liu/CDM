@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from models.transceiver import Key_net, Attacker, MAC, CAEM_Fig2_SNR_1D, FeatureMapSelectionModule_SNR_AllC, VerificationDiscriminatorLN
 from utlis.tools import SNR_to_noise, SeqtoText
-from utlis.trainer_for_next_work import initNetParams, train_step, val_step, train_mi
+from utlis.trainer_for_next_work import initNetParams, train_step, val_step, train_mi, greedy_decode
 from dataset.dataloader import return_iter, return_iter_10, return_iter_eve
 from models.transceiver import DeepSC, KnowledgeBase, KB_Mapping
 from models.mutual_info import Mine
@@ -29,7 +29,7 @@ parser.add_argument('--dff', default=512, type=int)
 parser.add_argument('--num-layers', default=4, type=int)
 parser.add_argument('--num-heads', default=8, type=int)
 parser.add_argument('--batch-size', default=512, type=int)  # 这里控制的是每次拿(从数据集中读取)多少张牌(个句子)
-parser.add_argument('--epochs', default=600, type=int)
+parser.add_argument('--epochs', default=2000, type=int)
 
 parser.add_argument('--encoder-num-layer', default=4, type=int, help='The number of encoder layers')
 parser.add_argument('--encoder-d-model', default=128, type=int, help='The output dimension of attention')
@@ -152,6 +152,7 @@ def validate(CAEM_with_SNR, fms, alice_verifier, epoch, args, net, alice_bob_mac
     alice_acc = 0
     eve_acc = 0
     m_acc = 0
+    all_acc = 0
 
     with torch.no_grad():  # 不需要计算梯度，看牌前的常规操作，不用管
         for sents in pbar:  # 其实就是for data in dataloader,这是[128, 31]的张量
@@ -163,7 +164,7 @@ def validate(CAEM_with_SNR, fms, alice_verifier, epoch, args, net, alice_bob_mac
                 pbar_eve_iter = iter(pbar_eve)
                 sents_eve = next(pbar_eve_iter).to(device)
 
-            loss_alice, loss_eve, loss_m, alice_1, eve_0, m_0 = val_step(CAEM_with_SNR, fms, alice_verifier,
+            loss_alice, loss_eve, loss_m, alice_1, eve_0, m_0, acc = val_step(CAEM_with_SNR, fms, alice_verifier,
                                             args, batch, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
                                                                                           sents, sents, sents_eve, 0.1, pad_idx, args.channel)
 
@@ -173,6 +174,7 @@ def validate(CAEM_with_SNR, fms, alice_verifier, epoch, args, net, alice_bob_mac
             alice_acc += alice_1
             eve_acc += eve_0
             m_acc += m_0
+            all_acc += acc
             # pbar.set_description(  # 设置进度条的描述
             #     'Epoch: {};  Type: VAL; Loss: {:.5f}'.format(
             #         epoch + 1, loss_total
@@ -191,7 +193,88 @@ def validate(CAEM_with_SNR, fms, alice_verifier, epoch, args, net, alice_bob_mac
     print("loss_perm: ", total_m / len(test_iterator))
     print("================validate======================")
 
-    return total_alice / len(test_iterator), total_eve / len(test_iterator), total_m / len(test_iterator), alice_acc / len(test_iterator), eve_acc / len(test_iterator), m_acc / len(test_iterator)
+    return total_alice / len(test_iterator), total_eve / len(test_iterator), total_m / len(test_iterator)
+
+def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping):
+    test_iterator = return_iter(args, 'test')
+    test_iterator_eve = return_iter_eve(args, 'test')
+    iter_eve = iter(test_iterator_eve)
+
+    StoT = SeqtoText(token_to_idx, end_idx)
+    score = []
+    alice_list = []
+    eve_list = []
+    m_list = []
+    acc_list = []
+
+    deepsc.eval()
+    key_ab.eval()
+    alice_bob_mac.eval()
+    eve.eval()
+    Alice_KB.eval()
+    Bob_KB.eval()
+    Eve_KB.eval()
+    Alice_mapping.eval()
+    Bob_mapping.eval()
+    Eve_mapping.eval()
+    CAEM_with_SNR.eval()
+    fms.eval()
+    alice_verifier.eval()
+
+
+    with torch.no_grad():
+        for epoch in range(1):
+            alice_list_tmp = []
+            eve_list_tmp = []
+            m_list_tmp = []
+            acc_list_tmp = []
+
+            for snr in tqdm(SNR):  # 对每个信噪比 所有的数据
+                # snr就是一个数
+                noise_std = SNR_to_noise(snr)
+
+                total_alice = 0
+                total_eve = 0
+                total_m = 0
+                total_acc = 0
+                for sents in test_iterator:
+                    sents = sents.to(device)
+                    try:
+                        sents_eve = next(iter_eve).to(device)
+                    except:
+                        iter_eve = iter(test_iterator_eve)
+                        sents_eve = next(iter_eve).to(device)
+                    alice_1, eve_0, m_0, acc = greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
+                                                                                        sents, sents_eve,
+                                                                                        noise_std, args.MAX_LENGTH,
+                                                                                        pad_idx,
+                                                                                        start_idx, args.channel)
+                    total_alice += alice_1
+                    total_eve += eve_0
+                    total_m += m_0
+                    total_acc += acc
+
+                average_alice = total_alice / len(test_iterator)  # 当前信噪比下的平均准确率(一个数)
+                average_eve = total_eve / len(test_iterator)
+                average_m = total_m / len(test_iterator)
+                average_acc = total_acc / len(test_iterator)
+
+                alice_list_tmp.append(average_alice)
+                eve_list_tmp.append(average_eve)
+                m_list_tmp.append(average_m)
+                acc_list_tmp.append(average_acc)
+
+            alice_list.append(alice_list_tmp)
+            eve_list.append(eve_list_tmp)
+            m_list.append(m_list_tmp)
+            acc_list.append(acc_list_tmp)
+
+    alice_score = np.mean(np.array(alice_list), axis=0)
+    eve_score = np.mean(np.array(eve_list), axis=0)
+    m_score = np.mean(np.array(m_list), axis=0)
+    acc_score = np.mean(np.array(acc_list), axis=0)
+
+    return alice_score, eve_score, m_score, acc_score
 
 if __name__ == '__main__':
     now = time.strftime("%Y-%m-%d-%H_%M_%S", time.localtime(time.time()))
@@ -261,37 +344,45 @@ if __name__ == '__main__':
     initNetParams(CAEM_with_SNR)
     initNetParams(fms)
     initNetParams(alice_verifier)
+    initNetParams(eve)
+    initNetParams(Eve_KB)
 
 
     checkpoint = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/checkpoint_109.pth')  # 之前三个检测率都最好
     # checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-03-16_52_04/checkpoint_28_0.7066_0.9751.pth')
+
+
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
-    eve_state_dict = checkpoint['eve']
+
     Alice_KB_state_dict = checkpoint['Alice_KB']
     Bob_KB_state_dict = checkpoint['Bob_KB']
-    Eve_KB_state_dict = checkpoint['Eve_KB']
+
     Alice_mapping_state_dict = checkpoint['Alice_mapping']
     Bob_mapping_state_dict = checkpoint['Bob_mapping']
     Eve_mapping_state_dict = checkpoint['Eve_mapping']
     # CAEM_with_SNR_state_dict = checkpoint_12['CAEM_with_SNR']
     # fms_state_dict = checkpoint_12['fms']
     # alice_verifier_state_dict = checkpoint_12['alice_verifier']
+    # eve_state_dict = checkpoint['eve']
+    # Eve_KB_state_dict = checkpoint['Eve_KB']
 
     deepsc.load_state_dict(model_state_dict)
     alice_bob_mac.load_state_dict(alice_bob_mac_state_dict)
     key_ab.load_state_dict(key_state_dict)
-    eve.load_state_dict(eve_state_dict)
+
     Alice_KB.load_state_dict(Alice_KB_state_dict)
     Bob_KB.load_state_dict(Bob_KB_state_dict)
-    Eve_KB.load_state_dict(Eve_KB_state_dict)
+
     Alice_mapping.load_state_dict(Alice_mapping_state_dict)
     Bob_mapping.load_state_dict(Bob_mapping_state_dict)
     Eve_mapping.load_state_dict(Eve_mapping_state_dict)
     # CAEM_with_SNR.load_state_dict(CAEM_with_SNR_state_dict)
     # fms.load_state_dict(fms_state_dict)
     # alice_verifier.load_state_dict(alice_verifier_state_dict)
+    # eve.load_state_dict(eve_state_dict)
+    # Eve_KB.load_state_dict(Eve_KB_state_dict)
 
     deepsc = deepsc.to(device)
     alice_bob_mac = alice_bob_mac.to(device)
@@ -317,13 +408,15 @@ if __name__ == '__main__':
         list(CAEM_with_SNR.parameters()) +
         list(fms.parameters()) +
         list(alice_verifier.parameters())+
-        list(Eve_KB.parameters()),
+        list(Eve_KB.parameters())+
+        list(eve.parameters()),
         lr=1e-4, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
     # 模型的设置可能有点问题
     # 只优化deepsc的优化器
     # optimizer_joint = torch.optim.Adam(deepsc.parameters(),
     #                              lr=1e-4, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
 
+    SNR = [0]
     # 下面就是训练deepsc模型
     for epoch in range(args.epochs):  # 默认训练完整的数据集80轮
         start = time.time()  # 记录每轮开始时间（没用到）
@@ -331,16 +424,18 @@ if __name__ == '__main__':
 
         loss_alice, loss_eve, loss_m = train(CAEM_with_SNR, fms, alice_verifier, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)  # 单独预训练deepsc
 
-        loss_alice_test, loss_eve_test, loss_m_test, alice_1, eve_0, m_0 = validate(CAEM_with_SNR, fms, alice_verifier, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
+        loss_alice_test, loss_eve_test, loss_m_test = validate(CAEM_with_SNR, fms, alice_verifier, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
 
+        alice_1, eve_0, m_0, acc = performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
         if loss_alice_test < record_loss:  # 如果验证的loss小于之前的loss（性能更好了）
             checkpoint = {
                 "CAEM_with_SNR": CAEM_with_SNR.state_dict(),
                 "fms": fms.state_dict(),
                 "alice_verifier": alice_verifier.state_dict(),
                 "Eve_KB": Eve_KB.state_dict(),
+                "eve": eve.state_dict()
             }
-            torch.save(checkpoint, './checkpoints/12/' + now + '/checkpoint_{}'.format(str(epoch).zfill(3)) + '_{}'.format(str(alice_1)[:6]) + '_{}_'.format(str(eve_0)[:6]) + '_{}.pth'.format(str(m_0)[:6]))  # 保存模型，文件名包含epoch和alice_1的准确率 eve_0的准确率 perm_0的准确率
+            torch.save(checkpoint, './checkpoints/12/' + now + '/checkpoint_{}'.format(str(epoch).zfill(3)) + '_{}'.format(str(alice_1)[:6]) + '_{}_'.format(str(eve_0)[:6]) + '_{}.pth'.format(str(m_0)[:6]))  # 保存模型，文件名包含epoch和alice_1的准确率 eve_0的准确率 eve发alice消息的准确率
             record_loss = loss_alice_test  # 更新最小的准确率
 
         writer.add_scalar('Loss_alice', loss_alice, epoch)

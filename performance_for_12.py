@@ -60,6 +60,7 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
     alice_list = []
     eve_list = []
     m_list = []
+    acc_list = []
 
     deepsc.eval()
     key_ab.eval()
@@ -81,6 +82,7 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
             alice_list_tmp = []
             eve_list_tmp = []
             m_list_tmp = []
+            acc_list_tmp = []
 
             for snr in tqdm(SNR):  # 对每个信噪比 所有的数据
                 # snr就是一个数
@@ -89,6 +91,7 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
                 total_alice = 0
                 total_eve = 0
                 total_m = 0
+                total_acc = 0
                 for sents in test_iterator:
                     sents = sents.to(device)
                     try:
@@ -96,7 +99,7 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
                     except:
                         iter_eve = iter(test_iterator_eve)
                         sents_eve = next(iter_eve).to(device)
-                    alice_1, eve_0, m_0 = greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
+                    alice_1, eve_0, m_0, acc = greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
                                                                                         sents, sents_eve,
                                                                                         noise_std, args.MAX_LENGTH,
                                                                                         pad_idx,
@@ -104,24 +107,29 @@ def performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob
                     total_alice += alice_1
                     total_eve += eve_0
                     total_m += m_0
+                    total_acc += acc
 
                 average_alice = total_alice / len(test_iterator)  # 当前信噪比下的平均准确率(一个数)
                 average_eve = total_eve / len(test_iterator)
                 average_m = total_m / len(test_iterator)
+                average_acc = total_acc / len(test_iterator)
 
                 alice_list_tmp.append(average_alice)
                 eve_list_tmp.append(average_eve)
                 m_list_tmp.append(average_m)
+                acc_list_tmp.append(average_acc)
 
             alice_list.append(alice_list_tmp)
             eve_list.append(eve_list_tmp)
             m_list.append(m_list_tmp)
+            acc_list.append(acc_list_tmp)
 
     alice_score = np.mean(np.array(alice_list), axis=0)
     eve_score = np.mean(np.array(eve_list), axis=0)
     m_score = np.mean(np.array(m_list), axis=0)
+    acc_score = np.mean(np.array(acc_list), axis=0)
 
-    return alice_score, eve_score, m_score
+    return alice_score, eve_score, m_score, acc_score
 
 
 
@@ -174,20 +182,22 @@ if __name__ == '__main__':
     checkpoint = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/checkpoint_109.pth')
     # checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-01-29-17_55_16/checkpoint_399_0.9968_0.9851.pth')  # 12部分的那三个网络
     checkpoint_12 = torch.load(
-        r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-04-03_14_43/checkpoint_21_0.7213_0.9040.pth_0.9059.pth')
+        r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-09-23_57_58/checkpoint_062_[0.634_[0.481__[0.468.pth')
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
-    eve_state_dict = checkpoint['eve']
+
     Alice_KB_state_dict = checkpoint['Alice_KB']
     Bob_KB_state_dict = checkpoint['Bob_KB']
-    Eve_KB_state_dict = checkpoint['Eve_KB']
+
     Alice_mapping_state_dict = checkpoint['Alice_mapping']
     Bob_mapping_state_dict = checkpoint['Bob_mapping']
     Eve_mapping_state_dict = checkpoint['Eve_mapping']
-    CAEM_with_SNR_state_dict = checkpoint_12['CAEM_with_SNR']
-    fms_state_dict = checkpoint_12['fms']
-    alice_verifier_state_dict = checkpoint_12['alice_verifier']
+    # CAEM_with_SNR_state_dict = checkpoint_12['CAEM_with_SNR']
+    # fms_state_dict = checkpoint_12['fms']
+    # alice_verifier_state_dict = checkpoint_12['alice_verifier']
+    eve_state_dict = checkpoint_12['eve']
+    Eve_KB_state_dict = checkpoint_12['Eve_KB']
 
 
     deepsc.load_state_dict(model_state_dict)
@@ -200,9 +210,9 @@ if __name__ == '__main__':
     Alice_mapping.load_state_dict(Alice_mapping_state_dict)
     Bob_mapping.load_state_dict(Bob_mapping_state_dict)
     Eve_mapping.load_state_dict(Eve_mapping_state_dict)
-    CAEM_with_SNR.load_state_dict(CAEM_with_SNR_state_dict)
-    fms.load_state_dict(fms_state_dict)
-    alice_verifier.load_state_dict(alice_verifier_state_dict)
+    # CAEM_with_SNR.load_state_dict(CAEM_with_SNR_state_dict)
+    # fms.load_state_dict(fms_state_dict)
+    # alice_verifier.load_state_dict(alice_verifier_state_dict)
 
     deepsc = deepsc.to(device)
     alice_bob_mac = alice_bob_mac.to(device)
@@ -218,7 +228,7 @@ if __name__ == '__main__':
     fms = fms.to(device)
     alice_verifier = alice_verifier.to(device)
 
-    alice_score, eve_score, m_score = performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
+    alice_score, eve_score, m_score, acc = performance(CAEM_with_SNR, fms, alice_verifier, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
     print("alice检测准确率：")
     print(alice_score)
     print("eve检测准确率：")
