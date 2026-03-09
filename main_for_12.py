@@ -188,9 +188,9 @@ def validate(CAEM_with_SNR, fms, alice_verifier, epoch, args, net, alice_bob_mac
         # )
     print("================validate======================")
     print("epoch: ", epoch)
-    print("loss_alice: ", total_alice / len(test_iterator))
-    print("loss_eve: ", total_eve / len(test_iterator))
-    print("loss_perm: ", total_m / len(test_iterator))
+    print("alice_1: ", alice_1 / len(test_iterator))
+    print("eve_0: ", eve_0 / len(test_iterator))
+    print("eve_alice_0: ", m_0 / len(test_iterator))
     print("================validate======================")
 
     return total_alice / len(test_iterator), total_eve / len(test_iterator), total_m / len(test_iterator)
@@ -344,8 +344,8 @@ if __name__ == '__main__':
     initNetParams(CAEM_with_SNR)
     initNetParams(fms)
     initNetParams(alice_verifier)
-    initNetParams(eve)
-    initNetParams(Eve_KB)
+    # initNetParams(eve)
+    # initNetParams(Eve_KB)
 
 
     checkpoint = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/checkpoint_109.pth')  # 之前三个检测率都最好
@@ -365,8 +365,8 @@ if __name__ == '__main__':
     # CAEM_with_SNR_state_dict = checkpoint_12['CAEM_with_SNR']
     # fms_state_dict = checkpoint_12['fms']
     # alice_verifier_state_dict = checkpoint_12['alice_verifier']
-    # eve_state_dict = checkpoint['eve']
-    # Eve_KB_state_dict = checkpoint['Eve_KB']
+    eve_state_dict = checkpoint['eve']
+    Eve_KB_state_dict = checkpoint['Eve_KB']
 
     deepsc.load_state_dict(model_state_dict)
     alice_bob_mac.load_state_dict(alice_bob_mac_state_dict)
@@ -381,8 +381,8 @@ if __name__ == '__main__':
     # CAEM_with_SNR.load_state_dict(CAEM_with_SNR_state_dict)
     # fms.load_state_dict(fms_state_dict)
     # alice_verifier.load_state_dict(alice_verifier_state_dict)
-    # eve.load_state_dict(eve_state_dict)
-    # Eve_KB.load_state_dict(Eve_KB_state_dict)
+    eve.load_state_dict(eve_state_dict)
+    Eve_KB.load_state_dict(Eve_KB_state_dict)
 
     deepsc = deepsc.to(device)
     alice_bob_mac = alice_bob_mac.to(device)

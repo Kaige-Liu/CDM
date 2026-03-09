@@ -194,7 +194,7 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
 
     channels = Channels()
     bs = args.batch_size
-    snr_min, snr_max = 0, 5  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    snr_min, snr_max = 3, 10  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
@@ -322,8 +322,8 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
 
 
     # 然后进行判别
-    logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
-    logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
+    logits = alice_verifier(g, g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
     logits_m = alice_verifier(g, channel_dec_g_m_pp)  # 判别打乱后的结果
 
     label_1 = torch.ones_like(logits)
@@ -336,24 +336,29 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
     loss_m_0 = criterion_bcelogits(logits_m, label_0)
     loss_m_1 = criterion_bcelogits(logits_m, label_1)
 
-    if batch_mod == 0 or batch_mod == 1 or batch_mod == 3:
-        freeze_net(key_ab, False)
-        freeze_net(alice_bob_mac, False)
-        freeze_net(eve, False)
-        freeze_net(Alice_KB, False)
-        freeze_net(Bob_KB, False)
-        freeze_net(Eve_KB, False)
-        freeze_net(Alice_mapping, False)
-        freeze_net(Bob_mapping, False)
-        freeze_net(Eve_mapping, False)
-        freeze_net(model, False)
-        freeze_net(CAEM_with_SNR, True)
-        freeze_net(fms, True)
-        freeze_net(alice_verifier, True)
-        loss = loss_eve_0 + loss_alice_1
-        opt_joint.zero_grad()
-        loss.backward()
-        opt_joint.step()
+    loss = loss_eve_0 + loss_alice_1
+    opt_joint.zero_grad()
+    loss.backward()
+    opt_joint.step()
+
+    # if batch_mod == 0 or batch_mod == 1 or batch_mod == 2 or batch_mod == 3:
+    #     freeze_net(key_ab, False)
+    #     freeze_net(alice_bob_mac, False)
+    #     freeze_net(eve, False)
+    #     freeze_net(Alice_KB, False)
+    #     freeze_net(Bob_KB, False)
+    #     freeze_net(Eve_KB, False)
+    #     freeze_net(Alice_mapping, False)
+    #     freeze_net(Bob_mapping, False)
+    #     freeze_net(Eve_mapping, False)
+    #     freeze_net(model, False)
+    #     freeze_net(CAEM_with_SNR, True)
+    #     freeze_net(fms, True)
+    #     freeze_net(alice_verifier, True)
+    #     loss = loss_eve_0 + loss_alice_1
+    #     opt_joint.zero_grad()
+    #     loss.backward()
+    #     opt_joint.step()
 
     # elif batch_mod == 1:
     #     freeze_net(key_ab, False)
@@ -374,24 +379,24 @@ def train_step(CAEM_with_SNR, fms, alice_verifier, args, epoch, batch, model, al
     #     loss.backward()
     #     opt_joint.step()
 
-    elif batch_mod == 2:
-        freeze_net(key_ab, False)
-        freeze_net(alice_bob_mac, False)
-        freeze_net(eve, True)
-        freeze_net(Alice_KB, False)
-        freeze_net(Bob_KB, False)
-        freeze_net(Eve_KB, True)
-        freeze_net(Alice_mapping, False)
-        freeze_net(Bob_mapping, False)
-        freeze_net(Eve_mapping, False)
-        freeze_net(model, False)
-        freeze_net(CAEM_with_SNR, False)
-        freeze_net(fms, False)
-        freeze_net(alice_verifier, False)
-        loss = loss_eve_1
-        opt_joint.zero_grad()
-        loss.backward()
-        opt_joint.step()
+    # elif batch_mod == 200000:
+    #     freeze_net(key_ab, False)
+    #     freeze_net(alice_bob_mac, False)
+    #     freeze_net(eve, True)
+    #     freeze_net(Alice_KB, False)
+    #     freeze_net(Bob_KB, False)
+    #     freeze_net(Eve_KB, True)
+    #     freeze_net(Alice_mapping, False)
+    #     freeze_net(Bob_mapping, False)
+    #     freeze_net(Eve_mapping, False)
+    #     freeze_net(model, False)
+    #     freeze_net(CAEM_with_SNR, False)
+    #     freeze_net(fms, False)
+    #     freeze_net(alice_verifier, False)
+    #     loss = loss_eve_1
+    #     opt_joint.zero_grad()
+    #     loss.backward()
+    #     opt_joint.step()
     # else:
     #     freeze_net(key_ab, False)
     #     freeze_net(alice_bob_mac, False)
@@ -425,7 +430,7 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
 
     channels = Channels()
     bs = src.size(0)
-    snr_min, snr_max = 0, 5  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    snr_min, snr_max = 3, 10  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
@@ -553,8 +558,8 @@ def val_step(CAEM_with_SNR, fms, alice_verifier, args, batch, model, alice_bob_m
     channel_dec_g_m_pp = model.channel_decoder(Rx_sig_g_m_pp)
 
     # 然后进行判别
-    logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
-    logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
+    logits = alice_verifier(g, g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
     logits_m = alice_verifier(g, channel_dec_g_m_pp)  # 判别打乱后的结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]
@@ -739,8 +744,8 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     channel_dec_g_m_pp = deepsc.channel_decoder(Rx_sig_g_m_pp)
 
     # 然后进行判别
-    logits = alice_verifier(g, channel_dec_g_pp)  # 判别结果
-    logits_eve = alice_verifier(g, channel_dec_g_eve_pp)  # 判别eve结果
+    logits = alice_verifier(g, g_pp)  # 判别结果
+    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
     logits_m = alice_verifier(g, channel_dec_g_m_pp)  # 判别打乱后的结果
 
     pred_pos = (logits >= 0).float()  # [bs,1]

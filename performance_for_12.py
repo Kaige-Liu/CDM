@@ -175,14 +175,14 @@ if __name__ == '__main__':
     Bob_mapping = KB_Mapping().to(device)
     Eve_mapping = KB_Mapping().to(device)
 
-    CAEM_with_SNR = CAEM_Fig2_SNR_1D(C_in=31, C_out=8, use_resnet=True).to(device)  # 加入SNR考量的映射 alice和bob共享
-    fms = FeatureMapSelectionModule_SNR_AllC(C=8, hidden=64).to(device)  # 对上面的映射进行特征选择 只有bob用 16就是上面的输出通道数 注意这里筛选完也是16通道 只不过有的被置零了
-    alice_verifier = VerificationDiscriminatorLN(C=8, L=128, output_logits=True).to(device)  # alice的验证器 128是特征长度
+    CAEM_with_SNR = CAEM_Fig2_SNR_1D(C_in=31, C_out=16, use_resnet=True).to(device)  # 加入SNR考量的映射 alice和bob共享
+    fms = FeatureMapSelectionModule_SNR_AllC(C=16, hidden=64).to(device)  # 对上面的映射进行特征选择 只有bob用 16就是上面的输出通道数 注意这里筛选完也是16通道 只不过有的被置零了
+    alice_verifier = VerificationDiscriminatorLN(C=16, L=128, output_logits=True).to(device)  # alice的验证器 128是特征长度
 
     checkpoint = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/checkpoint_109.pth')
     # checkpoint_12 = torch.load(r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-01-29-17_55_16/checkpoint_399_0.9968_0.9851.pth')  # 12部分的那三个网络
     checkpoint_12 = torch.load(
-        r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-09-23_57_58/checkpoint_062_[0.634_[0.481__[0.468.pth')
+        r'/root/autodl-tmp/for_work_12/checkpoints/12/2026-03-03-14_28_20/checkpoint_15_0.9474_0.9824.pth')
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
@@ -193,11 +193,11 @@ if __name__ == '__main__':
     Alice_mapping_state_dict = checkpoint['Alice_mapping']
     Bob_mapping_state_dict = checkpoint['Bob_mapping']
     Eve_mapping_state_dict = checkpoint['Eve_mapping']
-    # CAEM_with_SNR_state_dict = checkpoint_12['CAEM_with_SNR']
-    # fms_state_dict = checkpoint_12['fms']
-    # alice_verifier_state_dict = checkpoint_12['alice_verifier']
-    eve_state_dict = checkpoint_12['eve']
-    Eve_KB_state_dict = checkpoint_12['Eve_KB']
+    CAEM_with_SNR_state_dict = checkpoint_12['CAEM_with_SNR']
+    fms_state_dict = checkpoint_12['fms']
+    alice_verifier_state_dict = checkpoint_12['alice_verifier']
+    eve_state_dict = checkpoint['eve']
+    Eve_KB_state_dict = checkpoint['Eve_KB']
 
 
     deepsc.load_state_dict(model_state_dict)
@@ -210,9 +210,9 @@ if __name__ == '__main__':
     Alice_mapping.load_state_dict(Alice_mapping_state_dict)
     Bob_mapping.load_state_dict(Bob_mapping_state_dict)
     Eve_mapping.load_state_dict(Eve_mapping_state_dict)
-    # CAEM_with_SNR.load_state_dict(CAEM_with_SNR_state_dict)
-    # fms.load_state_dict(fms_state_dict)
-    # alice_verifier.load_state_dict(alice_verifier_state_dict)
+    CAEM_with_SNR.load_state_dict(CAEM_with_SNR_state_dict)
+    fms.load_state_dict(fms_state_dict)
+    alice_verifier.load_state_dict(alice_verifier_state_dict)
 
     deepsc = deepsc.to(device)
     alice_bob_mac = alice_bob_mac.to(device)
